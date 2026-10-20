@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Pure-Rust Photography Visualizer
 //!
 //! Main application entry point integrating Slint UI, multi-format image engine,
@@ -78,6 +80,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let (Some(paths), Some(ui)) = (files, ui_weak.upgrade()) {
                 state.borrow_mut().load_paths(&ui, paths, true);
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let state = state.clone();
+        ui.on_clear_session(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                state.borrow_mut().clear_session(&ui);
             }
         });
     }
@@ -232,6 +244,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_zoom_fit(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let mut s = state.borrow_mut();
+                let live_w = ui.get_live_canvas_width();
+                let live_h = ui.get_live_canvas_height();
+                if live_w > 10.0 && live_h > 10.0 {
+                    s.viewport.vp_w = live_w;
+                    s.viewport.vp_h = live_h;
+                }
                 s.viewport.fit_to_viewport();
                 s.sync_viewport_to_ui(&ui);
             }
@@ -369,6 +387,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         let dropped_batch = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
+        let timer = Rc::new(RefCell::new(slint::Timer::default()));
 
         ui.window().on_winit_window_event(move |_window, event| {
             match event {
@@ -386,9 +405,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     dropped_batch.borrow_mut().push(path.clone());
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_is_drag_hovered(false);
-                        let paths: Vec<PathBuf> = dropped_batch.borrow_mut().drain(..).collect();
-                        state.borrow_mut().load_paths(&ui, paths, false);
                     }
+
+                    // Debounce/batch multiple simultaneously dropped files and append to session
+                    let ui_weak = ui_weak.clone();
+                    let state = state.clone();
+                    let batch = dropped_batch.clone();
+                    timer.borrow_mut().start(
+                        slint::TimerMode::SingleShot,
+                        std::time::Duration::from_millis(30),
+                        move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                let paths: Vec<PathBuf> = batch.borrow_mut().drain(..).collect();
+                                if !paths.is_empty() {
+                                    state.borrow_mut().load_paths(&ui, paths, true);
+                                }
+                            }
+                        },
+                    );
                 }
                 _ => {}
             }

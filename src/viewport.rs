@@ -31,6 +31,7 @@ pub struct Viewport {
     pub offset_x: f32,
     pub offset_y: f32,
     pub scale: f32,
+    pub is_fitted: bool,
     pub drag_mode: DragMode,
 }
 
@@ -48,6 +49,7 @@ impl Default for Viewport {
             offset_x: 0.0,
             offset_y: 0.0,
             scale: 1.0,
+            is_fitted: true,
             drag_mode: DragMode::None,
         }
     }
@@ -67,32 +69,32 @@ impl Viewport {
     pub fn set_viewport_dimensions(&mut self, w: f32, h: f32) {
         self.vp_w = w.max(10.0);
         self.vp_h = h.max(10.0);
-        if self.scale == 1.0 && self.offset_x == 0.0 && self.offset_y == 0.0 && self.img_w > 0.0 {
+        if self.is_fitted && self.img_w > 0.0 {
             self.fit_to_viewport();
         }
     }
 
-    /// Fits the image to the canvas viewport, preserving aspect ratio.
+    /// Fits the image to the canvas viewport edge-to-edge, preserving aspect ratio.
+    /// If the image is horizontal (relative to canvas), it touches the left and right edges.
+    /// If the image is vertical (relative to canvas), it touches the top and bottom edges.
     pub fn fit_to_viewport(&mut self) {
         if self.img_w <= 0.0 || self.img_h <= 0.0 || self.vp_w <= 0.0 || self.vp_h <= 0.0 {
             return;
         }
 
-        // Leave a 12px aesthetic padding around the image if viewport is large enough
-        let pad_w = (self.vp_w - 24.0).max(10.0);
-        let pad_h = (self.vp_h - 24.0).max(10.0);
-
-        let scale_w = pad_w / self.img_w;
-        let scale_h = pad_h / self.img_h;
-        let target_scale = scale_w.min(scale_h).min(1.0).clamp(MIN_SCALE, MAX_SCALE);
+        let scale_w = self.vp_w / self.img_w;
+        let scale_h = self.vp_h / self.img_h;
+        let target_scale = scale_w.min(scale_h).clamp(MIN_SCALE, MAX_SCALE);
 
         self.scale = target_scale;
         self.offset_x = (self.vp_w - self.img_w * self.scale) / 2.0;
         self.offset_y = (self.vp_h - self.img_h * self.scale) / 2.0;
+        self.is_fitted = true;
     }
 
     /// Sets zoom to 100% (1:1 pixel scale), keeping the center of the viewport centered.
     pub fn set_zoom_100(&mut self) {
+        self.is_fitted = false;
         let center_x = self.vp_w / 2.0;
         let center_y = self.vp_h / 2.0;
         self.zoom_at_point(center_x, center_y, 1.0);
@@ -109,6 +111,8 @@ impl Viewport {
         if (new_scale - self.scale).abs() < f32::EPSILON {
             return;
         }
+
+        self.is_fitted = false;
 
         // Image coordinate under the anchor point before zoom
         let img_px = (anchor_x - self.offset_x) / self.scale;
@@ -182,6 +186,9 @@ impl Viewport {
             } => {
                 let dx = x - start_x;
                 let dy = y - start_y;
+                if dx != 0.0 || dy != 0.0 {
+                    self.is_fitted = false;
+                }
                 self.offset_x = start_offset_x + dx;
                 self.offset_y = start_offset_y + dy;
                 true
@@ -195,6 +202,9 @@ impl Viewport {
                 start_offset_y,
             } => {
                 let dx = x - start_x;
+                if dx != 0.0 {
+                    self.is_fitted = false;
+                }
                 // Exponential scrubby zoom: dragging right zooms in, dragging left zooms out
                 let new_scale = (start_scale * (dx * SCRUBBY_SENSITIVITY).exp()).clamp(MIN_SCALE, MAX_SCALE);
 
@@ -238,17 +248,37 @@ mod tests {
         let mut vp = Viewport::new();
         vp.vp_w = 1000.0;
         vp.vp_h = 800.0;
+        
+        // Horizontal image (2:1 aspect ratio in 1000x800 viewport)
         vp.set_image_dimensions(2000.0, 1000.0);
+        // scale_w = 1000/2000 = 0.5, scale_h = 800/1000 = 0.8 -> scale = 0.5
+        assert_eq!(vp.scale, 0.5);
+        // Touches left and right edges (width = 1000)
+        assert_eq!(vp.display_width(), 1000.0);
+        assert_eq!(vp.offset_x, 0.0);
+        // Vertically centered: height = 500, offset_y = (800 - 500)/2 = 150
+        assert_eq!(vp.display_height(), 500.0);
+        assert_eq!(vp.offset_y, 150.0);
+        assert!(vp.is_fitted);
 
-        // Aspect ratio is 2:1.
-        // Viewport padding is 24px, so available width is 976, available height is 776.
-        // Scale is limited by width: 976 / 2000 = 0.488.
-        assert!(vp.scale > 0.0 && vp.scale < 1.0);
-        // Should be horizontally and vertically centered:
-        let expected_x = (vp.vp_w - vp.img_w * vp.scale) / 2.0;
-        let expected_y = (vp.vp_h - vp.img_h * vp.scale) / 2.0;
-        assert!((vp.offset_x - expected_x).abs() < 1e-3);
-        assert!((vp.offset_y - expected_y).abs() < 1e-3);
+        // Vertical image (1:2 aspect ratio in 1000x800 viewport)
+        vp.set_image_dimensions(1000.0, 2000.0);
+        // scale_w = 1000/1000 = 1.0, scale_h = 800/2000 = 0.4 -> scale = 0.4
+        assert_eq!(vp.scale, 0.4);
+        // Touches top and bottom edges (height = 800)
+        assert_eq!(vp.display_height(), 800.0);
+        assert_eq!(vp.offset_y, 0.0);
+        // Horizontally centered: width = 400, offset_x = (1000 - 400)/2 = 300
+        assert_eq!(vp.display_width(), 400.0);
+        assert_eq!(vp.offset_x, 300.0);
+        assert!(vp.is_fitted);
+
+        // Viewport resize should automatically re-fit when is_fitted is true
+        vp.set_viewport_dimensions(1200.0, 600.0);
+        // scale_w = 1200/1000 = 1.2, scale_h = 600/2000 = 0.3 -> scale = 0.3
+        assert_eq!(vp.scale, 0.3);
+        assert_eq!(vp.display_height(), 600.0);
+        assert_eq!(vp.offset_y, 0.0);
     }
 
     #[test]
@@ -327,4 +357,3 @@ mod tests {
         assert!((canvas_y_after - cursor_y).abs() < 1e-3);
     }
 }
-

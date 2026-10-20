@@ -122,8 +122,12 @@ impl AppState {
         let model = Rc::new(VecModel::from(filmstrip_items));
         ui.set_filmstrip_items(ModelRc::from(model.clone()));
 
-        // Select initial photo
-        let target_idx = start_index.min(self.session_files.len() - 1);
+        // Select initial photo: keep existing if appending, otherwise select first new
+        let target_idx = if append && self.active_index.is_some() {
+            self.active_index.unwrap().min(self.session_files.len() - 1)
+        } else {
+            start_index.min(self.session_files.len() - 1)
+        };
         self.select_index(ui, target_idx);
 
         // Spawn async background thumbnail worker pool
@@ -203,6 +207,14 @@ impl AppState {
                 let exif_model = Rc::new(VecModel::from(exif_entries));
                 ui.set_exif_entries(ModelRc::from(exif_model));
 
+                // Sync live canvas dimensions before fitting
+                let live_w = ui.get_live_canvas_width();
+                let live_h = ui.get_live_canvas_height();
+                if live_w > 10.0 && live_h > 10.0 {
+                    self.viewport.vp_w = live_w;
+                    self.viewport.vp_h = live_h;
+                }
+
                 // Configure viewport and fit image
                 self.viewport.set_image_dimensions(w, h);
                 self.sync_viewport_to_ui(ui);
@@ -230,6 +242,24 @@ impl AppState {
                 self.select_index(ui, idx + 1);
             }
         }
+    }
+
+    pub fn clear_session(&mut self, ui: &AppWindow) {
+        self.session_files.clear();
+        self.active_index = None;
+        self.current_photo = None;
+        self.viewport = Viewport::new();
+        ui.set_has_image(false);
+        ui.set_current_image(slint::Image::default());
+        ui.set_current_filename("No photo open".into());
+        ui.set_current_dimensions("".into());
+        ui.set_current_format("".into());
+        ui.set_current_file_size("".into());
+        ui.set_current_index_text("".into());
+        ui.set_show_filmstrip(false);
+        ui.set_filmstrip_items(ModelRc::from(Rc::new(VecModel::default())));
+        ui.set_exif_entries(ModelRc::from(Rc::new(VecModel::default())));
+        self.sync_viewport_to_ui(ui);
     }
 
     pub fn sync_viewport_to_ui(&self, ui: &AppWindow) {

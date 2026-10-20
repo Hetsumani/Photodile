@@ -17,7 +17,7 @@ component IconButton inherits Rectangle {
     in property <length> icon-size: 14px;
     callback clicked();
 
-    min-height: 28px;
+    min-height: 26px;
     border-radius: 4px;
     background: !root.enabled ? #18181b : touch.pressed ? #3f3f46 : (touch.has-hover || root.active) ? #27272a : #18181b;
     border-width: 1px;
@@ -27,15 +27,15 @@ component IconButton inherits Rectangle {
     animate border-color { duration: 120ms; }
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
+        padding-left: 8px;
+        padding-right: 8px;
         spacing: 6px;
         alignment: center;
 
         Text {
             text: root.text;
             color: !root.enabled ? #71717a : root.active ? #60a5fa : #e4e4e7;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 500;
             vertical-alignment: center;
         }
@@ -73,6 +73,90 @@ component FormatBadge inherits Rectangle {
     }
 }
 
+component MenuBarButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> open: false;
+    callback clicked();
+
+    height: 24px;
+    border-radius: 4px;
+    background: root.open ? #2a2a2e : touch.pressed ? #3f3f46 : touch.has-hover ? #222225 : transparent;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        alignment: center;
+        Text {
+            text: root.text;
+            font-size: 12px;
+            font-weight: 500;
+            color: root.open ? #ffffff : #e4e4e7;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component MenuItem inherits Rectangle {
+    in property <string> text: "";
+    in property <string> shortcut: "";
+    in property <bool> enabled: true;
+    in property <bool> checked: false;
+    in property <bool> has-check: false;
+    callback clicked();
+
+    height: 28px;
+    border-radius: 4px;
+    background: !root.enabled ? transparent : touch.pressed ? #3f3f46 : touch.has-hover ? #2a2a2f : transparent;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        spacing: 10px;
+
+        if root.has-check: Text {
+            text: root.checked ? "✓" : "";
+            color: #3b82f6;
+            font-size: 11px;
+            font-weight: 700;
+            width: 14px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.text;
+            color: !root.enabled ? #52525b : #f4f4f5;
+            font-size: 12px;
+            font-weight: 500;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+
+        if root.shortcut != "": Text {
+            text: root.shortcut;
+            color: !root.enabled ? #3f3f46 : #71717a;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+component MenuSeparator inherits Rectangle {
+    height: 1px;
+    background: #27272a;
+}
+
 export component AppWindow inherits Window {
     title: "Photo Visualizer";
     preferred-width: 1280px;
@@ -94,6 +178,9 @@ export component AppWindow inherits Window {
     // Viewport transform
     in-out property <length> canvas-width: 800px;
     in-out property <length> canvas-height: 600px;
+    out property <float> live-canvas-width: canvas-container.width / 1px;
+    out property <float> live-canvas-height: canvas-container.height / 1px;
+
     in-out property <length> image-offset-x: 0px;
     in-out property <length> image-offset-y: 0px;
     in-out property <length> image-display-width: 0px;
@@ -113,6 +200,9 @@ export component AppWindow inherits Window {
     // Drag-and-drop overlay
     in-out property <bool> is-drag-hovered: false;
 
+    // Menu state (0 = closed, 1 = File, 2 = View)
+    in-out property <int> active-menu: 0;
+
     // "Convert to..." Dialog properties
     in-out property <bool> show-convert-modal: false;
     in-out property <int> selected-convert-format: 0; // 0=PNG, 1=JPEG, 2=WebP, 3=AVIF, 4=TIFF, 5=QOI, 6=BMP, 7=OpenEXR, 8=TGA
@@ -129,6 +219,7 @@ export component AppWindow inherits Window {
     callback open-folder();
     callback add-images();
     callback save-as();
+    callback clear-session();
     callback open-convert-modal();
     callback confirm-convert(int, int); // format_index, quality
     callback close-convert-modal();
@@ -195,6 +286,10 @@ export component AppWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.Escape) {
+                if (root.active-menu != 0) {
+                    root.active-menu = 0;
+                    return accept;
+                }
                 if (root.show-convert-modal) {
                     root.close-convert-modal();
                     return accept;
@@ -218,10 +313,11 @@ export component AppWindow inherits Window {
         VerticalLayout {
             spacing: 0px;
 
-            // TOP TOOLBAR
+            // TOP MENU BAR
             Rectangle {
-                height: 44px;
+                height: 32px;
                 background: #18181b;
+                z: 20;
 
                 Rectangle {
                     y: parent.height - 1px;
@@ -230,86 +326,66 @@ export component AppWindow inherits Window {
                 }
 
                 HorizontalLayout {
-                    padding-left: 12px;
+                    padding-left: 10px;
                     padding-right: 12px;
-                    spacing: 8px;
+                    spacing: 4px;
                     alignment: start;
 
-                    // App Title / Brand
+                    // App Title / Brand Icon
                     HorizontalLayout {
-                        spacing: 8px;
+                        spacing: 6px;
                         alignment: center;
-                        padding-right: 8px;
+                        padding-right: 6px;
 
                         Rectangle {
-                            width: 22px;
-                            height: 22px;
-                            border-radius: 5px;
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 4px;
                             background: #3b82f6;
                             Text {
                                 text: "P";
                                 color: #ffffff;
-                                font-size: 13px;
+                                font-size: 11px;
                                 font-weight: 800;
-                                x: 6px;
-                                y: 2px;
+                                x: 5px;
+                                y: 1px;
                             }
                         }
 
                         Text {
                             text: "Photo Visualizer";
                             color: #f4f4f5;
-                            font-size: 13px;
+                            font-size: 12px;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
                     }
 
                     // Separator
-                    Rectangle { width: 1px; height: 24px; background: #27272a; y: 10px; }
+                    Rectangle { width: 1px; height: 16px; background: #27272a; y: 8px; }
 
-                    // File Actions
-                    IconButton { text: "Open File"; clicked => { root.open-single-file(); } }
-                    IconButton { text: "Open Files"; clicked => { root.open-multi-files(); } }
-                    IconButton { text: "Open Folder"; clicked => { root.open-folder(); } }
-                    IconButton { text: "Add Images"; enabled: root.has-image; clicked => { root.add-images(); } }
-
-                    // Separator
-                    Rectangle { width: 1px; height: 24px; background: #27272a; y: 10px; }
-
-                    // Export Actions
-                    IconButton { text: "Save As..."; enabled: root.has-image; clicked => { root.save-as(); } }
-                    IconButton { text: "Convert to..."; enabled: root.has-image; clicked => { root.open-convert-modal(); } }
-
-                    // Separator
-                    Rectangle { width: 1px; height: 24px; background: #27272a; y: 10px; }
-
-                    // Zoom Controls
-                    IconButton { text: "−"; enabled: root.has-image; clicked => { root.zoom-out(); } }
-                    Rectangle {
-                        width: 52px;
-                        height: 28px;
-                        background: #121214;
-                        border-radius: 4px;
-                        border-width: 1px;
-                        border-color: #27272a;
-                        Text {
-                            text: root.zoom-percentage-text;
-                            color: #e4e4e7;
-                            font-size: 11px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                    // "File" Menu Button
+                    file-btn := MenuBarButton {
+                        text: "File";
+                        open: root.active-menu == 1;
+                        clicked => {
+                            root.active-menu = root.active-menu == 1 ? 0 : 1;
                         }
                     }
-                    IconButton { text: "+"; enabled: root.has-image; clicked => { root.zoom-in(); } }
-                    IconButton { text: "Fit (0)"; enabled: root.has-image; clicked => { root.zoom-fit(); } }
-                    IconButton { text: "100% (1)"; enabled: root.has-image; clicked => { root.zoom-100(); } }
+
+                    // "View" Menu Button
+                    view-btn := MenuBarButton {
+                        text: "View";
+                        open: root.active-menu == 2;
+                        clicked => {
+                            root.active-menu = root.active-menu == 2 ? 0 : 2;
+                        }
+                    }
 
                     // Spacer
                     Rectangle { horizontal-stretch: 1; }
 
-                    // View Toggles
+                    // Quick Sidebar / Filmstrip toggles on top right
                     IconButton {
                         text: "Filmstrip";
                         active: root.show-filmstrip;
@@ -335,6 +411,14 @@ export component AppWindow inherits Window {
                     horizontal-stretch: 1;
                     background: #09090b;
                     clip: true;
+
+                    // Dynamically report live dimensions whenever container resizes
+                    changed width => {
+                        root.canvas-resized(self.width / 1px, self.height / 1px);
+                    }
+                    changed height => {
+                        root.canvas-resized(self.width / 1px, self.height / 1px);
+                    }
 
                     // Empty State Prompt
                     if !root.has-image: Rectangle {
@@ -370,7 +454,7 @@ export component AppWindow inherits Window {
                             }
 
                             Text {
-                                text: "Click 'Open File', 'Open Folder', or drag & drop images here";
+                                text: "Click 'File > Open File' or drag & drop photos here";
                                 font-size: 13px;
                                 color: #a1a1aa;
                                 horizontal-alignment: center;
@@ -405,6 +489,9 @@ export component AppWindow inherits Window {
                         mouse-cursor: root.is-dragging-canvas ? (root.ctrl-held ? ew-resize : grabbing) : (root.space-held ? (root.ctrl-held ? ew-resize : grab) : default);
 
                         pointer-event(event) => {
+                            if (root.active-menu != 0) {
+                                root.active-menu = 0;
+                            }
                             if (event.kind == PointerEventKind.down) {
                                 root.canvas-pointer-down(self.mouse-x / 1px, self.mouse-y / 1px, 1);
                             } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
@@ -435,7 +522,7 @@ export component AppWindow inherits Window {
                             spacing: 8px;
 
                             Text {
-                                text: "Drop Photos or Folder Here";
+                                text: "Drop Photos or Folder Here (Appends to Filmstrip)";
                                 font-size: 18px;
                                 font-weight: 700;
                                 color: #93c5fd;
@@ -444,7 +531,6 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Viewport Resize Tracker
                     init => {
                         root.canvas-resized(self.width / 1px, self.height / 1px);
                     }
@@ -612,9 +698,9 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // BOTTOM STATUS BAR
+            // BOTTOM BAR (WITH ZOOM CONTROLS IN THE BOTTOM-LEFT CORNER)
             Rectangle {
-                height: 26px;
+                height: 34px;
                 background: #111113;
 
                 Rectangle {
@@ -625,11 +711,36 @@ export component AppWindow inherits Window {
                 }
 
                 HorizontalLayout {
-                    padding-left: 12px;
+                    padding-left: 8px;
                     padding-right: 12px;
-                    spacing: 12px;
+                    spacing: 8px;
 
-                    // Left Details
+                    // ZOOM OPTIONS IN BOTTOM-LEFT CORNER
+                    IconButton { text: "−"; enabled: root.has-image; clicked => { root.zoom-out(); } }
+                    Rectangle {
+                        width: 50px;
+                        height: 26px;
+                        background: #18181b;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        Text {
+                            text: root.zoom-percentage-text;
+                            color: #60a5fa;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    IconButton { text: "+"; enabled: root.has-image; clicked => { root.zoom-in(); } }
+                    IconButton { text: "Fit (0)"; enabled: root.has-image; clicked => { root.zoom-fit(); } }
+                    IconButton { text: "100% (1)"; enabled: root.has-image; clicked => { root.zoom-100(); } }
+
+                    // Separator
+                    Rectangle { width: 1px; height: 16px; background: #27272a; y: 9px; }
+
+                    // Photo Info Details
                     if root.current-index-text != "": Text {
                         text: root.current-index-text;
                         color: #71717a;
@@ -648,7 +759,7 @@ export component AppWindow inherits Window {
 
                     if root.current-format != "": FormatBadge {
                         text: root.current-format;
-                        y: 4px;
+                        y: 8px;
                     }
 
                     if root.current-dimensions != "": Text {
@@ -675,15 +786,73 @@ export component AppWindow inherits Window {
                         font-size: 10px;
                         vertical-alignment: center;
                     }
-
-                    Text {
-                        text: root.zoom-percentage-text;
-                        color: #60a5fa;
-                        font-size: 11px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
                 }
+            }
+        }
+
+        // CLICK-OUTSIDE DISMISSAL FOR POPUP MENUS
+        if root.active-menu != 0: TouchArea {
+            width: 100%;
+            height: 100%;
+            z: 90;
+            clicked => { root.active-menu = 0; }
+        }
+
+        // "FILE" POPUP DROPDOWN MENU
+        if root.active-menu == 1: Rectangle {
+            x: 105px;
+            y: 32px;
+            width: 220px;
+            height: self.preferred-height;
+            z: 100;
+            background: #18181b;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #2e2e33;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #000000aa;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                MenuItem { text: "Open File..."; shortcut: "Ctrl+O"; clicked => { root.active-menu = 0; root.open-single-file(); } }
+                MenuItem { text: "Open Multiple Files..."; shortcut: "Ctrl+Shift+O"; clicked => { root.active-menu = 0; root.open-multi-files(); } }
+                MenuItem { text: "Open Folder..."; shortcut: "Ctrl+K"; clicked => { root.active-menu = 0; root.open-folder(); } }
+                MenuItem { text: "Add Images to Session..."; enabled: root.has-image; clicked => { root.active-menu = 0; root.add-images(); } }
+                MenuSeparator {}
+                MenuItem { text: "Save As..."; shortcut: "Ctrl+S"; enabled: root.has-image; clicked => { root.active-menu = 0; root.save-as(); } }
+                MenuItem { text: "Convert to..."; shortcut: "Ctrl+E"; enabled: root.has-image; clicked => { root.active-menu = 0; root.open-convert-modal(); } }
+                MenuSeparator {}
+                MenuItem { text: "Clear Session"; enabled: root.has-image; clicked => { root.active-menu = 0; root.clear-session(); } }
+            }
+        }
+
+        // "VIEW" POPUP DROPDOWN MENU
+        if root.active-menu == 2: Rectangle {
+            x: 145px;
+            y: 32px;
+            width: 210px;
+            height: self.preferred-height;
+            z: 100;
+            background: #18181b;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #2e2e33;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #000000aa;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                MenuItem { text: "Fit to View"; shortcut: "0 / F"; enabled: root.has-image; clicked => { root.active-menu = 0; root.zoom-fit(); } }
+                MenuItem { text: "Actual Size (100%)"; shortcut: "1"; enabled: root.has-image; clicked => { root.active-menu = 0; root.zoom-100(); } }
+                MenuItem { text: "Zoom In"; shortcut: "+"; enabled: root.has-image; clicked => { root.active-menu = 0; root.zoom-in(); } }
+                MenuItem { text: "Zoom Out"; shortcut: "-"; enabled: root.has-image; clicked => { root.active-menu = 0; root.zoom-out(); } }
+                MenuSeparator {}
+                MenuItem { text: "Filmstrip"; shortcut: "T"; has-check: true; checked: root.show-filmstrip; enabled: root.filmstrip-items.length > 0; clicked => { root.active-menu = 0; root.toggle-filmstrip(); } }
+                MenuItem { text: "Photo Details & EXIF"; shortcut: "I"; has-check: true; checked: root.show-info; enabled: root.has-image; clicked => { root.active-menu = 0; root.toggle-info(); } }
             }
         }
 
@@ -692,6 +861,7 @@ export component AppWindow inherits Window {
             width: 100%;
             height: 100%;
             background: #000000bb;
+            z: 150;
 
             // Modal Box
             Rectangle {
@@ -823,4 +993,3 @@ export component AppWindow inherits Window {
         }
     }
 }
-
