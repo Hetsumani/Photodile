@@ -365,8 +365,9 @@ export component AppWindow inherits Window {
     // Menu state (0 = closed, 1 = File, 2 = View)
     in-out property <int> active-menu: 0;
 
-    // "Convert to..." Dialog properties
+    // Modal visibility properties
     in-out property <bool> show-convert-modal: false;
+    in-out property <bool> show-about-modal: false;
     in-out property <int> selected-convert-format: 0; // 0=PNG, 1=JPEG, 2=WebP, 3=AVIF, 4=TIFF, 5=QOI, 6=BMP, 7=OpenEXR, 8=TGA
     in-out property <int> convert-quality: 90;
 
@@ -385,6 +386,9 @@ export component AppWindow inherits Window {
     callback open-convert-modal();
     callback confirm-convert(int, int); // format_index, quality
     callback close-convert-modal();
+    callback open-about-modal();
+    callback close-about-modal();
+    callback open-url(string);
     callback zoom-in();
     callback zoom-out();
     callback zoom-fit();
@@ -456,6 +460,10 @@ export component AppWindow inherits Window {
                     root.close-convert-modal();
                     return accept;
                 }
+                if (root.show-about-modal) {
+                    root.show-about-modal = false;
+                    return accept;
+                }
             }
             return reject;
         }
@@ -492,10 +500,10 @@ export component AppWindow inherits Window {
                     padding-right: 0px;
                     spacing: 0px;
 
-                    // Left Section: App Icon + File/View Menus
+                    // Left Section: App Icon + File/View/Help Menus
                     Rectangle {
                         horizontal-stretch: 0;
-                        width: 140px;
+                        width: 195px;
                         height: 40px;
 
                         HorizontalLayout {
@@ -528,6 +536,16 @@ export component AppWindow inherits Window {
                                 y: (parent.height - self.height) / 2;
                                 clicked => {
                                     root.active-menu = root.active-menu == 2 ? 0 : 2;
+                                }
+                            }
+
+                            // "Help" Menu Button
+                            help-btn := MenuBarButton {
+                                text: "Help";
+                                open: root.active-menu == 3;
+                                y: (parent.height - self.height) / 2;
+                                clicked => {
+                                    root.active-menu = root.active-menu == 3 ? 0 : 3;
                                 }
                             }
                         }
@@ -1101,6 +1119,34 @@ export component AppWindow inherits Window {
             }
         }
 
+        // "HELP" POPUP DROPDOWN MENU
+        if root.active-menu == 3: Rectangle {
+            x: 144px;
+            y: 40px;
+            width: 160px;
+            height: self.preferred-height;
+            z: 100;
+            background: #18181b;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #2e2e33;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #000000aa;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                MenuItem {
+                    text: "About";
+                    clicked => {
+                        root.active-menu = 0;
+                        root.show-about-modal = true;
+                    }
+                }
+            }
+        }
+
         // "CONVERT TO..." IN-APP MODAL
         if root.show-convert-modal: Rectangle {
             width: 100%;
@@ -1231,6 +1277,193 @@ export component AppWindow inherits Window {
                             text: "Convert & Save...";
                             active: true;
                             clicked => { root.confirm-convert(root.selected-convert-format, root.convert-quality); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // "ABOUT PHOTODILE" SPLASH SCREEN MODAL
+        if root.show-about-modal: Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #000000bb;
+            z: 150;
+
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => { root.show-about-modal = false; }
+            }
+
+            Rectangle {
+                width: 480px;
+                height: self.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #18181b;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: #27272a;
+                drop-shadow-blur: 32px;
+                drop-shadow-color: #000000dd;
+
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 14px;
+                    alignment: center;
+
+                    // Header: Logo & Title
+                    HorizontalLayout {
+                        alignment: center;
+                        Image {
+                            width: 72px;
+                            height: 72px;
+                            source: @image-url("../images/iconV04.png");
+                            image-fit: contain;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 8px;
+                            Text {
+                                text: "Photodile";
+                                font-size: 20px;
+                                font-weight: 700;
+                                color: #f4f4f5;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                height: 20px;
+                                border-radius: 4px;
+                                background: #27272a;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    alignment: center;
+                                    Text {
+                                        text: "v0.2.0";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: #60a5fa;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "Developed by: Hetsumani S.A.S. with Antigravity";
+                            font-size: 12px;
+                            font-weight: 500;
+                            color: #a1a1aa;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #27272a; }
+
+                    // Thank You Notice
+                    Text {
+                        text: "Thank you for using Photodile! Built for photographers and visual creators who value speed, simplicity, and precision.";
+                        font-size: 11px;
+                        color: #d4d4d8;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    // Tech Stack & Slint Notice Box
+                    Rectangle {
+                        border-radius: 6px;
+                        background: #131315;
+                        border-width: 1px;
+                        border-color: #27272a;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+
+                            Text {
+                                text: "Built in 100% Pure Rust 🦀";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: #f97316;
+                                horizontal-alignment: center;
+                            }
+
+                            // Slint Attribution (Clickable)
+                            Rectangle {
+                                height: 24px;
+                                border-radius: 4px;
+                                background: slint-touch.has-hover ? #222226 : transparent;
+
+                                Text {
+                                    text: "GUI powered by Slint UI (slint.dev) ↗";
+                                    font-size: 11px;
+                                    font-weight: 500;
+                                    color: slint-touch.has-hover ? #60a5fa : #93c5fd;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                slint-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.open-url("https://slint.dev");
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // GitHub Repository Button (Clickable)
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 6px;
+                        background: repo-touch.pressed ? #27272a : repo-touch.has-hover ? #242428 : #18181b;
+                        border-width: 1px;
+                        border-color: repo-touch.has-hover ? #3b82f6 : #2e2e33;
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            Text {
+                                text: "Source Code on GitHub: github.com/Hetsumani/Photodile ↗";
+                                font-size: 11px;
+                                font-weight: 500;
+                                color: repo-touch.has-hover ? #60a5fa : #e4e4e7;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        repo-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.open-url("https://github.com/Hetsumani/Photodile");
+                            }
+                        }
+                    }
+
+                    // License Notice
+                    Text {
+                        text: "Released under the MIT Open Source License\nCopyright © 2026 Hetsumani S.A.S.";
+                        font-size: 10px;
+                        color: #71717a;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    // Close Button
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-top: 4px;
+
+                        IconButton {
+                            text: "Close";
+                            clicked => { root.show-about-modal = false; }
                         }
                     }
                 }

@@ -165,6 +165,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // "About" Splash Screen & URL Opener Callbacks
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_open_about_modal(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_show_about_modal(true);
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_close_about_modal(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_show_about_modal(false);
+            }
+        });
+    }
+
+    ui.on_open_url(move |url| {
+        let url_str = url.as_str();
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("rundll32")
+                .args(["url.dll,FileProtocolHandler", url_str])
+                .spawn();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(url_str)
+                .spawn();
+        }
+    });
+
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
