@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Pure-Rust Photography Visualizer
+//! Photodile - Pure-Rust Photography Visualizer
 //!
 //! Main application entry point integrating Slint UI, multi-format image engine,
 //! interactive viewport navigation (Pan, Scrubby Zoom, Wheel Zoom), OS drag-and-drop,

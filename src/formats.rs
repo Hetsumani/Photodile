@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_export_and_decode_roundtrips() {
-        let temp_dir = std::env::temp_dir().join("photo_visualizer_test");
+        let temp_dir = std::env::temp_dir().join("photodile_test");
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let original = make_test_image(64, 48);

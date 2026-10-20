@@ -3739,7 +3739,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "photo-visualizer"
+name = "photodile"
 version = "0.1.0"
 dependencies = [
  "anyhow",

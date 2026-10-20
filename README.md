@@ -1,4 +1,4 @@
-# Photo Visualizer
+# Photodile
 
 <p align="center">
   <strong>A high-performance, cross-platform photography visualizer built in 100% pure Rust and Slint.</strong>
@@ -124,7 +124,7 @@ cargo run --release
 
 # Or build the standalone release binary
 cargo build --release
-.\target\release\photo-visualizer.exe
+.\target\release\photodile.exe
 ```
 
 #### On Linux:
@@ -134,7 +134,7 @@ cargo run --release
 
 # Or build the standalone release binary
 cargo build --release
-./target/release/photo-visualizer
+./target/release/photodile
 ```
 
 ### Command-Line Usage
@@ -143,13 +143,13 @@ You can open images or folders directly from your terminal:
 
 ```bash
 # Open a single photo
-photo-visualizer photo.jpg
+photodile photo.jpg
 
 # Open multiple photos
-photo-visualizer image1.png image2.webp image3.arw
+photodile image1.png image2.webp image3.arw
 
 # Open an entire folder
-photo-visualizer "C:\Users\Username\Pictures\Trip"
+photodile "C:\Users\Username\Pictures\Trip"
 ```
 
 ---

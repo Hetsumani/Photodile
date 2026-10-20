@@ -1,9 +1,10 @@
 [package]
-name = "photo-visualizer"
+name = "photodile"
 version = "0.1.0"
 edition = "2021"
 description = "Pure-Rust photography visualizer built with Slint"
 license = "MIT"
+repository = "https://github.com/Hetsumani/Photodile"
 
 [dependencies]
 slint = { version = "1.9", default-features = false, features = ["backend-winit", "renderer-femtovg", "renderer-software", "compat-1-2"] }
