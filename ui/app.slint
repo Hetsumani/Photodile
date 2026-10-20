@@ -1,0 +1,826 @@
+export struct FilmstripItem {
+    index: int,
+    filename: string,
+    thumbnail: image,
+    has_thumbnail: bool,
+}
+
+export struct ExifEntry {
+    label: string,
+    value: string,
+}
+
+component IconButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <length> icon-size: 14px;
+    callback clicked();
+
+    min-height: 28px;
+    border-radius: 4px;
+    background: !root.enabled ? #18181b : touch.pressed ? #3f3f46 : (touch.has-hover || root.active) ? #27272a : #18181b;
+    border-width: 1px;
+    border-color: root.active ? #3b82f6 : (touch.has-hover ? #3f3f46 : #27272a);
+
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            color: !root.enabled ? #71717a : root.active ? #60a5fa : #e4e4e7;
+            font-size: 12px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+component FormatBadge inherits Rectangle {
+    in property <string> text: "";
+    in property <color> badge-color: #3b82f6;
+
+    height: 18px;
+    border-radius: 3px;
+    background: root.badge-color.transparentize(80%);
+    border-width: 1px;
+    border-color: root.badge-color.transparentize(50%);
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            font-size: 10px;
+            font-weight: 700;
+            color: root.badge-color;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Photo Visualizer";
+    preferred-width: 1280px;
+    preferred-height: 820px;
+    min-width: 720px;
+    min-height: 480px;
+    background: #0f0f11;
+    default-font-family: "Segoe UI, Inter, Roboto, sans-serif";
+
+    // Application State Properties
+    in-out property <image> current-image;
+    in-out property <bool> has-image: false;
+    in-out property <string> current-filename: "No photo open";
+    in-out property <string> current-dimensions: "";
+    in-out property <string> current-format: "";
+    in-out property <string> current-file-size: "";
+    in-out property <string> current-index-text: "";
+
+    // Viewport transform
+    in-out property <length> canvas-width: 800px;
+    in-out property <length> canvas-height: 600px;
+    in-out property <length> image-offset-x: 0px;
+    in-out property <length> image-offset-y: 0px;
+    in-out property <length> image-display-width: 0px;
+    in-out property <length> image-display-height: 0px;
+    in-out property <float> current-zoom: 1.0;
+    in-out property <string> zoom-percentage-text: "100%";
+
+    // Filmstrip properties
+    in-out property <[FilmstripItem]> filmstrip-items: [];
+    in-out property <int> active-index: -1;
+    in-out property <bool> show-filmstrip: false;
+
+    // Sidebar properties
+    in-out property <bool> show-info: false;
+    in-out property <[ExifEntry]> exif-entries: [];
+
+    // Drag-and-drop overlay
+    in-out property <bool> is-drag-hovered: false;
+
+    // "Convert to..." Dialog properties
+    in-out property <bool> show-convert-modal: false;
+    in-out property <int> selected-convert-format: 0; // 0=PNG, 1=JPEG, 2=WebP, 3=AVIF, 4=TIFF, 5=QOI, 6=BMP, 7=OpenEXR, 8=TGA
+    in-out property <int> convert-quality: 90;
+
+    // Keyboard state tracking
+    in-out property <bool> space-held: false;
+    in-out property <bool> ctrl-held: false;
+    in-out property <bool> is-dragging-canvas: false;
+
+    // Callbacks to Rust backend
+    callback open-single-file();
+    callback open-multi-files();
+    callback open-folder();
+    callback add-images();
+    callback save-as();
+    callback open-convert-modal();
+    callback confirm-convert(int, int); // format_index, quality
+    callback close-convert-modal();
+    callback zoom-in();
+    callback zoom-out();
+    callback zoom-fit();
+    callback zoom-100();
+    callback toggle-filmstrip();
+    callback toggle-info();
+    callback select-index(int);
+    callback navigate-prev();
+    callback navigate-next();
+
+    public function set-thumbnail(index: int, thumb: image) {
+        root.filmstrip-items[index].thumbnail = thumb;
+        root.filmstrip-items[index].has_thumbnail = true;
+    }
+
+    // Canvas interactions
+    callback canvas-pointer-down(float, float, int); // x, y, button (1=left, 2=right, 3=middle)
+    callback canvas-pointer-move(float, float);
+    callback canvas-pointer-up(float, float);
+    callback canvas-scroll(float, float, float); // delta_y, mouse_x, mouse_y
+    callback canvas-resized(float, float);
+
+    // Keyboard callbacks
+    callback key-pressed(string, bool, bool) -> bool; // text, ctrl, shift
+    callback key-released(string);
+
+    forward-focus: focus-scope;
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " ") {
+                root.space-held = true;
+                return accept;
+            }
+            if (event.text == Key.Control) {
+                root.ctrl-held = true;
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.navigate-prev();
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                root.navigate-next();
+                return accept;
+            }
+            if (event.text == "0" || event.text == "f" || event.text == "F") {
+                root.zoom-fit();
+                return accept;
+            }
+            if (event.text == "1") {
+                root.zoom-100();
+                return accept;
+            }
+            if (event.text == "t" || event.text == "T") {
+                root.toggle-filmstrip();
+                return accept;
+            }
+            if (event.text == "i" || event.text == "I") {
+                root.toggle-info();
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                if (root.show-convert-modal) {
+                    root.close-convert-modal();
+                    return accept;
+                }
+            }
+            return reject;
+        }
+
+        key-released(event) => {
+            if (event.text == " ") {
+                root.space-held = false;
+                return accept;
+            }
+            if (event.text == Key.Control) {
+                root.ctrl-held = false;
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            spacing: 0px;
+
+            // TOP TOOLBAR
+            Rectangle {
+                height: 44px;
+                background: #18181b;
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: #27272a;
+                }
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    // App Title / Brand
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: center;
+                        padding-right: 8px;
+
+                        Rectangle {
+                            width: 22px;
+                            height: 22px;
+                            border-radius: 5px;
+                            background: #3b82f6;
+                            Text {
+                                text: "P";
+                                color: #ffffff;
+                                font-size: 13px;
+                                font-weight: 800;
+                                x: 6px;
+                                y: 2px;
+                            }
+                        }
+
+                        Text {
+                            text: "Photo Visualizer";
+                            color: #f4f4f5;
+                            font-size: 13px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Separator
+                    Rectangle { width: 1px; height: 24px; background: #27272a; y: 10px; }
+
+                    // File Actions
+                    IconButton { text: "Open File"; clicked => { root.open-single-file(); } }
+                    IconButton { text: "Open Files"; clicked => { root.open-multi-files(); } }
+                    IconButton { text: "Open Folder"; clicked => { root.open-folder(); } }
+                    IconButton { text: "Add Images"; enabled: root.has-image; clicked => { root.add-images(); } }
+
+                    // Separator
+                    Rectangle { width: 1px; height: 24px; background: #27272a; y: 10px; }
+
+                    // Export Actions
+                    IconButton { text: "Save As..."; enabled: root.has-image; clicked => { root.save-as(); } }
+                    IconButton { text: "Convert to..."; enabled: root.has-image; clicked => { root.open-convert-modal(); } }
+
+                    // Separator
+                    Rectangle { width: 1px; height: 24px; background: #27272a; y: 10px; }
+
+                    // Zoom Controls
+                    IconButton { text: "−"; enabled: root.has-image; clicked => { root.zoom-out(); } }
+                    Rectangle {
+                        width: 52px;
+                        height: 28px;
+                        background: #121214;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        Text {
+                            text: root.zoom-percentage-text;
+                            color: #e4e4e7;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    IconButton { text: "+"; enabled: root.has-image; clicked => { root.zoom-in(); } }
+                    IconButton { text: "Fit (0)"; enabled: root.has-image; clicked => { root.zoom-fit(); } }
+                    IconButton { text: "100% (1)"; enabled: root.has-image; clicked => { root.zoom-100(); } }
+
+                    // Spacer
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // View Toggles
+                    IconButton {
+                        text: "Filmstrip";
+                        active: root.show-filmstrip;
+                        enabled: root.filmstrip-items.length > 0;
+                        clicked => { root.toggle-filmstrip(); }
+                    }
+                    IconButton {
+                        text: "Info";
+                        active: root.show-info;
+                        enabled: root.has-image;
+                        clicked => { root.toggle-info(); }
+                    }
+                }
+            }
+
+            // MIDDLE AREA: Canvas + Optional Sidebar
+            HorizontalLayout {
+                vertical-stretch: 1;
+                spacing: 0px;
+
+                // MAIN INTERACTIVE CANVAS
+                canvas-container := Rectangle {
+                    horizontal-stretch: 1;
+                    background: #09090b;
+                    clip: true;
+
+                    // Empty State Prompt
+                    if !root.has-image: Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 12px;
+
+                            Rectangle {
+                                width: 56px;
+                                height: 56px;
+                                border-radius: 28px;
+                                background: #18181b;
+                                border-width: 1px;
+                                border-color: #27272a;
+                                x: (parent.width - self.width) / 2;
+
+                                Text {
+                                    text: "🖼";
+                                    font-size: 24px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+
+                            Text {
+                                text: "No Photo Open";
+                                font-size: 16px;
+                                font-weight: 600;
+                                color: #f4f4f5;
+                                horizontal-alignment: center;
+                            }
+
+                            Text {
+                                text: "Click 'Open File', 'Open Folder', or drag & drop images here";
+                                font-size: 13px;
+                                color: #a1a1aa;
+                                horizontal-alignment: center;
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 10px;
+                                padding-top: 8px;
+
+                                IconButton { text: "Open Photo"; clicked => { root.open-single-file(); } }
+                                IconButton { text: "Open Folder"; clicked => { root.open-folder(); } }
+                            }
+                        }
+                    }
+
+                    // Rendered Image
+                    if root.has-image: Image {
+                        x: root.image-offset-x;
+                        y: root.image-offset-y;
+                        width: root.image-display-width;
+                        height: root.image-display-height;
+                        source: root.current-image;
+                        image-fit: fill;
+                        image-rendering: root.current-zoom >= 4.0 ? pixelated : smooth;
+                    }
+
+                    // Interactive TouchArea for Mouse Pan / Scrubby Zoom / Scroll
+                    canvas-touch := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        mouse-cursor: root.is-dragging-canvas ? (root.ctrl-held ? ew-resize : grabbing) : (root.space-held ? (root.ctrl-held ? ew-resize : grab) : default);
+
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                root.canvas-pointer-down(self.mouse-x / 1px, self.mouse-y / 1px, 1);
+                            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                                root.canvas-pointer-up(self.mouse-x / 1px, self.mouse-y / 1px);
+                            }
+                        }
+
+                        moved => {
+                            root.canvas-pointer-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                        }
+
+                        scroll-event(event) => {
+                            root.canvas-scroll(event.delta-y / 1px, self.mouse-x / 1px, self.mouse-y / 1px);
+                            return accept;
+                        }
+                    }
+
+                    // OS File Drag & Drop Overlay
+                    if root.is-drag-hovered: Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        background: #1d4ed833;
+                        border-width: 2px;
+                        border-color: #3b82f6;
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Drop Photos or Folder Here";
+                                font-size: 18px;
+                                font-weight: 700;
+                                color: #93c5fd;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Viewport Resize Tracker
+                    init => {
+                        root.canvas-resized(self.width / 1px, self.height / 1px);
+                    }
+                }
+
+                // COLLAPSIBLE EXIF & METADATA SIDEBAR
+                if root.show-info: Rectangle {
+                    width: 280px;
+                    background: #141416;
+
+                    Rectangle {
+                        x: 0px;
+                        width: 1px;
+                        height: 100%;
+                        background: #27272a;
+                    }
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 12px;
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: "Photo Details & EXIF";
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: #f4f4f5;
+                                vertical-alignment: center;
+                            }
+                            IconButton {
+                                text: "✕";
+                                clicked => { root.toggle-info(); }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #27272a; }
+
+                        Flickable {
+                            vertical-stretch: 1;
+                            content-height: (root.exif-entries.length * 28px) + 20px;
+
+                            VerticalLayout {
+                                spacing: 8px;
+
+                                for entry in root.exif-entries: Rectangle {
+                                    height: 24px;
+                                    HorizontalLayout {
+                                        alignment: space-between;
+                                        Text {
+                                            text: entry.label;
+                                            color: #a1a1aa;
+                                            font-size: 11px;
+                                            font-weight: 500;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: entry.value;
+                                            color: #f4f4f5;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: right;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // BOTTOM FILMSTRIP
+            if root.show-filmstrip: Rectangle {
+                height: 108px;
+                background: #141416;
+
+                Rectangle {
+                    y: 0px;
+                    width: 100%;
+                    height: 1px;
+                    background: #27272a;
+                }
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    spacing: 8px;
+
+                    // Prev Button
+                    IconButton {
+                        text: "◀";
+                        enabled: root.active-index > 0;
+                        clicked => { root.navigate-prev(); }
+                    }
+
+                    // Filmstrip Thumbnails Flickable List
+                    Flickable {
+                        horizontal-stretch: 1;
+                        content-width: root.filmstrip-items.length * 94px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            for item in root.filmstrip-items: Rectangle {
+                                width: 86px;
+                                height: 90px;
+                                border-radius: 4px;
+                                background: item.index == root.active-index ? #1e293b : #18181b;
+                                border-width: item.index == root.active-index ? 2px : 1px;
+                                border-color: item.index == root.active-index ? #3b82f6 : #27272a;
+
+                                VerticalLayout {
+                                    padding: 4px;
+                                    spacing: 4px;
+
+                                    Rectangle {
+                                        width: 78px;
+                                        height: 58px;
+                                        border-radius: 2px;
+                                        background: #09090b;
+                                        clip: true;
+
+                                        if item.has_thumbnail: Image {
+                                            width: 100%;
+                                            height: 100%;
+                                            source: item.thumbnail;
+                                            image-fit: contain;
+                                        }
+
+                                        if !item.has_thumbnail: Text {
+                                            text: "Loading...";
+                                            font-size: 9px;
+                                            color: #71717a;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: item.filename;
+                                        font-size: 10px;
+                                        color: item.index == root.active-index ? #93c5fd : #a1a1aa;
+                                        horizontal-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.select-index(item.index); }
+                                }
+                            }
+                        }
+                    }
+
+                    // Next Button
+                    IconButton {
+                        text: "▶";
+                        enabled: root.active-index < root.filmstrip-items.length - 1;
+                        clicked => { root.navigate-next(); }
+                    }
+                }
+            }
+
+            // BOTTOM STATUS BAR
+            Rectangle {
+                height: 26px;
+                background: #111113;
+
+                Rectangle {
+                    y: 0px;
+                    width: 100%;
+                    height: 1px;
+                    background: #1f1f23;
+                }
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 12px;
+
+                    // Left Details
+                    if root.current-index-text != "": Text {
+                        text: root.current-index-text;
+                        color: #71717a;
+                        font-size: 11px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.current-filename;
+                        color: #d4d4d8;
+                        font-size: 11px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+
+                    if root.current-format != "": FormatBadge {
+                        text: root.current-format;
+                        y: 4px;
+                    }
+
+                    if root.current-dimensions != "": Text {
+                        text: root.current-dimensions;
+                        color: #a1a1aa;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+
+                    if root.current-file-size != "": Text {
+                        text: root.current-file-size;
+                        color: #71717a;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+
+                    // Spacer
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // Navigation & Tool Hints
+                    Text {
+                        text: "Space+Drag: Pan | Space+Ctrl+Drag: Scrubby Zoom | Scroll: Zoom | Arrows: Prev/Next";
+                        color: #52525b;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.zoom-percentage-text;
+                        color: #60a5fa;
+                        font-size: 11px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // "CONVERT TO..." IN-APP MODAL
+        if root.show-convert-modal: Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #000000bb;
+
+            // Modal Box
+            Rectangle {
+                width: 440px;
+                height: 380px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #18181b;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #27272a;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: #000000aa;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    // Header
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: "Convert Image";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: #f4f4f5;
+                            vertical-alignment: center;
+                        }
+                        IconButton {
+                            text: "✕";
+                            clicked => { root.close-convert-modal(); }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #27272a; }
+
+                    // Format Selection
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Target Format:";
+                            color: #a1a1aa;
+                            font-size: 12px;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            IconButton { text: "PNG"; active: root.selected-convert-format == 0; clicked => { root.selected-convert-format = 0; } }
+                            IconButton { text: "JPEG"; active: root.selected-convert-format == 1; clicked => { root.selected-convert-format = 1; } }
+                            IconButton { text: "WebP"; active: root.selected-convert-format == 2; clicked => { root.selected-convert-format = 2; } }
+                            IconButton { text: "AVIF"; active: root.selected-convert-format == 3; clicked => { root.selected-convert-format = 3; } }
+                            IconButton { text: "TIFF"; active: root.selected-convert-format == 4; clicked => { root.selected-convert-format = 4; } }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            IconButton { text: "QOI"; active: root.selected-convert-format == 5; clicked => { root.selected-convert-format = 5; } }
+                            IconButton { text: "BMP"; active: root.selected-convert-format == 6; clicked => { root.selected-convert-format = 6; } }
+                            IconButton { text: "OpenEXR"; active: root.selected-convert-format == 7; clicked => { root.selected-convert-format = 7; } }
+                            IconButton { text: "TGA"; active: root.selected-convert-format == 8; clicked => { root.selected-convert-format = 8; } }
+                        }
+                    }
+
+                    // Quality Control (JPEG & AVIF)
+                    if root.selected-convert-format == 1 || root.selected-convert-format == 3: VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: "Export Quality:";
+                                color: #a1a1aa;
+                                font-size: 12px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: root.convert-quality + "%";
+                                color: #3b82f6;
+                                font-size: 12px;
+                                font-weight: 700;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            IconButton { text: "75%"; clicked => { root.convert-quality = 75; } }
+                            IconButton { text: "85%"; clicked => { root.convert-quality = 85; } }
+                            IconButton { text: "92%"; clicked => { root.convert-quality = 92; } }
+                            IconButton { text: "98%"; clicked => { root.convert-quality = 98; } }
+                            IconButton { text: "100%"; clicked => { root.convert-quality = 100; } }
+                        }
+                    }
+
+                    // Image summary info
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: "Source: " + root.current-filename;
+                            color: #71717a;
+                            font-size: 11px;
+                        }
+                        Text {
+                            text: "Resolution: " + root.current-dimensions;
+                            color: #71717a;
+                            font-size: 11px;
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+
+                    // Modal Buttons
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 10px;
+
+                        IconButton {
+                            text: "Cancel";
+                            clicked => { root.close-convert-modal(); }
+                        }
+
+                        IconButton {
+                            text: "Convert & Save...";
+                            active: true;
+                            clicked => { root.confirm-convert(root.selected-convert-format, root.convert-quality); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

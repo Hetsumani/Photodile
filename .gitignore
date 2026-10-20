@@ -1,0 +1,68 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.bk
+
+# IDE and Editor files
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# Operating System files
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+.directory
+
+# Slint & Build metadata
+SLINT_DEFAULT_STYLE.txt
+
+# Log files
+*.log
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.bk
+
+# IDE and Editor files
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# Operating System files
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+.directory
+
+# Slint & Build metadata
+SLINT_DEFAULT_STYLE.txt
+
+# Log files
+*.log

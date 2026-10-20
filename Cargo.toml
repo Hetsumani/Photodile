@@ -1,0 +1,42 @@
+[package]
+name = "photo-visualizer"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust photography visualizer built with Slint"
+license = "MIT"
+
+[dependencies]
+slint = { version = "1.9", default-features = false, features = ["backend-winit", "renderer-femtovg", "renderer-software", "compat-1-2"] }
+i-slint-backend-winit = "1.9"
+winit = "0.30"
+
+# File dialogs (Windows Win32, Linux XDG Desktop Portal in pure Rust)
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal"] }
+
+# 100% pure-Rust image codecs
+image = { version = "0.25", default-features = false, features = [
+    "jpeg", "png", "webp", "tiff", "exr", "hdr", "bmp", "gif",
+    "ico", "tga", "qoi", "pnm", "dds", "ff", "avif", "rayon"
+] }
+
+# Additional pure-Rust decoders
+resvg = "0.44"
+tiny-skia = "0.11"
+psd = "0.3"
+jxl-oxide = "0.9"
+rawloader = "0.37"
+imagepipe = "0.5"
+
+# EXIF parsing & metadata
+kamadak-exif = "0.5"
+
+# Byte conversions for HDR/EXR
+bytemuck = "1.18"
+
+# Utilities
+rayon = "1.10"
+natord = "1.0"
+anyhow = "1.0"
+
+[build-dependencies]
+slint-build = "1.9"
