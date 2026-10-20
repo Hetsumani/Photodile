@@ -382,7 +382,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // 5. OS File Drag & Drop Interception and Window Icon via Winit Backend Hook
+    // 5. Frameless Window Controls & Resize
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_window_drag(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.window().with_winit_window(|winit_win| {
+                    let _ = winit_win.drag_window();
+                });
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_window_minimize(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.window().with_winit_window(|winit_win| {
+                    winit_win.set_minimized(true);
+                });
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_window_toggle_maximize(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.window().with_winit_window(|winit_win| {
+                    let is_max = !winit_win.is_maximized();
+                    winit_win.set_maximized(is_max);
+                    ui.set_is_window_maximized(is_max);
+                });
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_window_close(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let _ = ui.hide();
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_window_resize(move |dir_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let direction = match dir_idx {
+                    1 => winit::window::ResizeDirection::North,
+                    2 => winit::window::ResizeDirection::South,
+                    3 => winit::window::ResizeDirection::East,
+                    4 => winit::window::ResizeDirection::West,
+                    5 => winit::window::ResizeDirection::NorthEast,
+                    6 => winit::window::ResizeDirection::NorthWest,
+                    7 => winit::window::ResizeDirection::SouthEast,
+                    8 => winit::window::ResizeDirection::SouthWest,
+                    _ => return,
+                };
+                ui.window().with_winit_window(|winit_win| {
+                    let _ = winit_win.drag_resize_window(direction);
+                });
+            }
+        });
+    }
+
+    // 6. OS File Drag & Drop Interception and Window Icon via Winit Backend Hook
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
@@ -407,6 +474,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             match event {
+                winit::event::WindowEvent::Resized(_) => {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        window.with_winit_window(|winit_win| {
+                            ui.set_is_window_maximized(winit_win.is_maximized());
+                        });
+                    }
+                }
                 winit::event::WindowEvent::HoveredFile(_) => {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_is_drag_hovered(true);
