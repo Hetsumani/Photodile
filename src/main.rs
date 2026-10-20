@@ -382,14 +382,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // 5. OS File Drag & Drop Interception via Winit Backend Hook
+    // 5. OS File Drag & Drop Interception and Window Icon via Winit Backend Hook
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         let dropped_batch = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
         let timer = Rc::new(RefCell::new(slint::Timer::default()));
+        let icon_set = Rc::new(RefCell::new(false));
 
-        ui.window().on_winit_window_event(move |_window, event| {
+        ui.window().on_winit_window_event(move |window, event| {
+            if !*icon_set.borrow() {
+                *icon_set.borrow_mut() = true;
+                window.with_winit_window(|winit_win| {
+                    if let Ok(icon_bytes) = std::fs::read("images/iconV04.ico") {
+                        if let Ok(img) = image::load_from_memory_with_format(&icon_bytes, image::ImageFormat::Ico) {
+                            let rgba = img.into_rgba8();
+                            let (w, h) = (rgba.width(), rgba.height());
+                            if let Ok(icon) = winit::window::Icon::from_rgba(rgba.into_raw(), w, h) {
+                                winit_win.set_window_icon(Some(icon));
+                            }
+                        }
+                    }
+                });
+            }
+
             match event {
                 winit::event::WindowEvent::HoveredFile(_) => {
                     if let Some(ui) = ui_weak.upgrade() {

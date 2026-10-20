@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/iconV04.png" alt="Photodile Logo" width="140" />
+</p>
+
 # Photodile
 
 <p align="center">
