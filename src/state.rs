@@ -313,44 +313,127 @@ impl AppState {
             format!("{} / {}", index + 1, self.session_files.len()).into(),
         );
 
-        // Populate EXIF sidebar entries
+        // Populate grouped EXIF & RAW metadata entries
         let mut exif_entries = Vec::new();
-        if let Some(ref make) = photo.exif.camera_make {
-            exif_entries.push(ExifEntry { label: "Make".into(), value: make.clone().into() });
+
+        let mut add_section = |title: &str, items: Vec<(&str, Option<String>)>| {
+            let valid_items: Vec<(&str, String)> = items
+                .into_iter()
+                .filter_map(|(label, val)| val.map(|v| (label, v)))
+                .collect();
+            if !valid_items.is_empty() {
+                exif_entries.push(ExifEntry {
+                    label: title.into(),
+                    value: "".into(),
+                    is_header: true,
+                });
+                for (label, val) in valid_items {
+                    exif_entries.push(ExifEntry {
+                        label: label.into(),
+                        value: val.into(),
+                        is_header: false,
+                    });
+                }
+            }
+        };
+
+        // 1. Camera & Actuations
+        add_section(
+            "CAMERA & ACTUATIONS",
+            vec![
+                ("Make", photo.exif.camera_make.clone()),
+                ("Camera", photo.exif.camera_model.clone()),
+                ("Shutter Count", photo.exif.shutter_count.clone()),
+                ("Image / Shot #", photo.exif.image_number.clone()),
+                ("Drive Mode", photo.exif.drive_mode.clone()),
+                ("Focus Mode", photo.exif.focus_mode.clone()),
+                ("AF System", photo.exif.af_system.clone()),
+                ("Body Serial", photo.exif.body_serial.clone()),
+                ("Internal Serial", photo.exif.internal_serial.clone()),
+                ("Firmware", photo.exif.firmware.clone()),
+                ("Camera Temp", photo.exif.camera_temp.clone()),
+            ],
+        );
+
+        // 2. Exposure & Metering
+        add_section(
+            "EXPOSURE & METERING",
+            vec![
+                ("Shutter", photo.exif.shutter_speed.clone()),
+                ("Aperture", photo.exif.aperture.clone()),
+                ("ISO", photo.exif.iso.clone()),
+                ("Program", photo.exif.exposure_program.clone()),
+                ("Exp. Mode", photo.exif.exposure_mode.clone()),
+                ("Exp. Bias", photo.exif.exposure_bias.clone()),
+                ("Metering", photo.exif.metering_mode.clone()),
+                ("White Balance", photo.exif.white_balance.clone()),
+                ("Light Source", photo.exif.light_source.clone()),
+                ("Color Temp", photo.exif.color_temp.clone()),
+                ("Picture Style", photo.exif.picture_style.clone()),
+                ("Flash", photo.exif.flash.clone()),
+            ],
+        );
+
+        // 3. Optics & Lens
+        add_section(
+            "OPTICS & LENS",
+            vec![
+                ("Lens Make", photo.exif.lens_make.clone()),
+                ("Lens", photo.exif.lens_model.clone()),
+                ("Lens Spec", photo.exif.lens_spec.clone()),
+                ("Focal Length", photo.exif.focal_length.clone()),
+                ("35mm Equiv.", photo.exif.focal_length_35mm.clone()),
+                ("Max Aperture", photo.exif.max_aperture.clone()),
+                ("Subject Dist.", photo.exif.subject_distance.clone()),
+                ("Lens Serial", photo.exif.lens_serial.clone()),
+            ],
+        );
+
+        // 4. RAW Sensor Pipeline (only present for Camera RAW files)
+        if let Some(ref raw) = photo.exif.raw_sensor {
+            add_section(
+                "RAW SENSOR PIPELINE",
+                vec![
+                    (
+                        "Sensor Model",
+                        if !raw.clean_model.is_empty() {
+                            Some(format!("{} {}", raw.clean_make, raw.clean_model))
+                        } else {
+                            None
+                        },
+                    ),
+                    ("Raw Sensor", Some(format!("{} × {} px", raw.sensor_width, raw.sensor_height))),
+                    ("Active Area", Some(format!("{} × {} px", raw.active_width, raw.active_height))),
+                    ("CFA Pattern", Some(format!("{} (Bayer)", raw.cfa_pattern))),
+                    ("ADC Depth", Some(raw.bit_depth_est.clone())),
+                    ("Black Level", Some(raw.black_level.clone())),
+                    ("White Level", Some(raw.white_level.clone())),
+                    ("As-Shot WB", Some(raw.wb_multipliers.clone())),
+                ],
+            );
         }
-        if let Some(ref model) = photo.exif.camera_model {
-            exif_entries.push(ExifEntry { label: "Camera".into(), value: model.clone().into() });
-        }
-        if let Some(ref lens) = photo.exif.lens_model {
-            exif_entries.push(ExifEntry { label: "Lens".into(), value: lens.clone().into() });
-        }
-        if let Some(ref fl) = photo.exif.focal_length {
-            exif_entries.push(ExifEntry { label: "Focal Length".into(), value: fl.clone().into() });
-        }
-        if let Some(ref ap) = photo.exif.aperture {
-            exif_entries.push(ExifEntry { label: "Aperture".into(), value: ap.clone().into() });
-        }
-        if let Some(ref ss) = photo.exif.shutter_speed {
-            exif_entries.push(ExifEntry { label: "Shutter".into(), value: ss.clone().into() });
-        }
-        if let Some(ref iso) = photo.exif.iso {
-            exif_entries.push(ExifEntry { label: "ISO".into(), value: iso.clone().into() });
-        }
-        if let Some(ref dt) = photo.exif.date_taken {
-            exif_entries.push(ExifEntry { label: "Date Taken".into(), value: dt.clone().into() });
-        }
-        exif_entries.push(ExifEntry {
-            label: "Megapixels".into(),
-            value: format!("{:.1} MP", (w as f32 * h as f32) / 1_000_000.0).into(),
-        });
-        exif_entries.push(ExifEntry {
-            label: "File Size".into(),
-            value: format_file_size(photo.file_size_bytes).into(),
-        });
-        exif_entries.push(ExifEntry {
-            label: "Full Path".into(),
-            value: path.to_string_lossy().to_string().into(),
-        });
+
+        // 5. Author, GPS & File
+        add_section(
+            "FILE, AUTHOR & GPS",
+            vec![
+                ("Date Taken", photo.exif.date_taken.clone()),
+                ("Digitized", photo.exif.date_digitized.clone()),
+                ("Artist / Owner", photo.exif.artist.clone()),
+                ("Copyright", photo.exif.copyright.clone()),
+                ("Color Space", photo.exif.color_space.clone()),
+                ("GPS Coords", photo.exif.gps_coords.clone()),
+                ("GPS Altitude", photo.exif.gps_altitude.clone()),
+                ("Dimensions", Some(format!("{} × {} px", w, h))),
+                (
+                    "Megapixels",
+                    Some(format!("{:.1} MP", (w as f32 * h as f32) / 1_000_000.0)),
+                ),
+                ("Format", Some(photo.format_name.clone())),
+                ("File Size", Some(format_file_size(photo.file_size_bytes))),
+                ("Full Path", Some(path.to_string_lossy().to_string())),
+            ],
+        );
 
         let exif_model = Rc::new(VecModel::from(exif_entries));
         ui.set_exif_entries(ModelRc::from(exif_model));

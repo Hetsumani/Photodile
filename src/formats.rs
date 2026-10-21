@@ -12,7 +12,7 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use image::{DynamicImage, GenericImageView, ImageEncoder, RgbaImage};
 
-use crate::exif_meta::{apply_exif_orientation, parse_exif, ExifMetadata};
+use crate::exif_meta::{apply_exif_orientation, parse_exif, ExifMetadata, RawSensorInfo};
 
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     // Standard / Pro Raster
@@ -59,7 +59,7 @@ where
 {
     progress(0.05, "Reading file & EXIF metadata...");
     let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let exif = parse_exif(path);
+    let mut exif = parse_exif(path);
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
@@ -144,7 +144,13 @@ where
         | "raf" | "srw" | "erf" | "kdc" | "dcr" | "mos" | "mef" | "mrw" => {
             progress(0.20, "Decoding Camera RAW sensor data...");
             match decode_camera_raw_with_progress(path, &mut progress) {
-                Ok(raw_img) => (raw_img, ext.to_uppercase()),
+                Ok((raw_img, sensor_info)) => {
+                    if exif.orientation == 1 && sensor_info.raw_orientation > 1 {
+                        exif.orientation = sensor_info.raw_orientation;
+                    }
+                    exif.raw_sensor = Some(sensor_info);
+                    (raw_img, ext.to_uppercase())
+                }
                 Err(_) => {
                     progress(0.60, "Fallback: reading RAW preview stream...");
                     let reader = image::ImageReader::open(path)?.with_guessed_format()?;
@@ -190,13 +196,89 @@ where
     })
 }
 
-fn decode_camera_raw_with_progress<F>(path: &Path, progress: &mut F) -> Result<DynamicImage>
+fn decode_camera_raw_with_progress<F>(
+    path: &Path,
+    progress: &mut F,
+) -> Result<(DynamicImage, RawSensorInfo)>
 where
     F: FnMut(f32, &str),
 {
     progress(0.25, "Decoding Camera RAW sensor data...");
     let raw = rawloader::decode_file(path)
         .map_err(|e| anyhow!("Camera RAW decode error: {:?}", e))?;
+
+    let sensor_w = raw.width;
+    let sensor_h = raw.height;
+    let active_w = if raw.crops[1] > raw.crops[3] {
+        sensor_w.saturating_sub(raw.crops[1] + raw.crops[3])
+    } else {
+        sensor_w
+    };
+    let active_h = if raw.crops[2] > raw.crops[0] {
+        sensor_h.saturating_sub(raw.crops[0] + raw.crops[2])
+    } else {
+        sensor_h
+    };
+
+    let bit_depth = if raw.whitelevels[0] > 16384 {
+        "16-bit (est.)"
+    } else if raw.whitelevels[0] > 4096 {
+        "14-bit (est.)"
+    } else if raw.whitelevels[0] > 1024 {
+        "12-bit (est.)"
+    } else {
+        "10-bit (est.)"
+    };
+
+    let wb_str = format!(
+        "R: {:.2}, G: {:.2}, B: {:.2}",
+        raw.wb_coeffs[0], raw.wb_coeffs[1], raw.wb_coeffs[2]
+    );
+
+    let black_str = if raw.blacklevels[0] == raw.blacklevels[1]
+        && raw.blacklevels[1] == raw.blacklevels[2]
+        && raw.blacklevels[2] == raw.blacklevels[3]
+    {
+        format!("{}", raw.blacklevels[0])
+    } else {
+        format!("{:?}", raw.blacklevels)
+    };
+
+    let white_str = if raw.whitelevels[0] == raw.whitelevels[1]
+        && raw.whitelevels[1] == raw.whitelevels[2]
+        && raw.whitelevels[2] == raw.whitelevels[3]
+    {
+        format!("{}", raw.whitelevels[0])
+    } else {
+        format!("{:?}", raw.whitelevels)
+    };
+
+    let raw_orientation = match raw.orientation {
+        rawloader::Orientation::Normal => 1,
+        rawloader::Orientation::HorizontalFlip => 2,
+        rawloader::Orientation::Rotate180 => 3,
+        rawloader::Orientation::VerticalFlip => 4,
+        rawloader::Orientation::Transpose => 5,
+        rawloader::Orientation::Rotate90 => 6,
+        rawloader::Orientation::Transverse => 7,
+        rawloader::Orientation::Rotate270 => 8,
+        rawloader::Orientation::Unknown => 1,
+    };
+
+    let sensor_info = RawSensorInfo {
+        clean_make: raw.clean_make.clone(),
+        clean_model: raw.clean_model.clone(),
+        sensor_width: sensor_w,
+        sensor_height: sensor_h,
+        active_width: active_w,
+        active_height: active_h,
+        cfa_pattern: raw.cfa.name.clone(),
+        bit_depth_est: bit_depth.to_string(),
+        black_level: black_str,
+        white_level: white_str,
+        wb_multipliers: wb_str,
+        raw_orientation,
+    };
 
     progress(0.50, "Developing sRGB color pipeline...");
     let mut pipeline = imagepipe::Pipeline::new_from_source(imagepipe::ImageSource::Raw(raw))
@@ -214,7 +296,7 @@ where
         srgb_data.data,
     )
     .ok_or_else(|| anyhow!("Failed to build RgbImage from RAW data"))?;
-    Ok(DynamicImage::ImageRgb8(rgb))
+    Ok((DynamicImage::ImageRgb8(rgb), sensor_info))
 }
 
 /// Converts a `DynamicImage` to a `slint::Image`
