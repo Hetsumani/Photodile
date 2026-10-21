@@ -588,13 +588,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !*icon_set.borrow() {
                 *icon_set.borrow_mut() = true;
                 window.with_winit_window(|winit_win| {
-                    if let Ok(icon_bytes) = std::fs::read("images/iconV04.ico") {
-                        if let Ok(img) = image::load_from_memory_with_format(&icon_bytes, image::ImageFormat::Ico) {
-                            let rgba = img.into_rgba8();
-                            let (w, h) = (rgba.width(), rgba.height());
-                            if let Ok(icon) = winit::window::Icon::from_rgba(rgba.into_raw(), w, h) {
-                                winit_win.set_window_icon(Some(icon));
-                            }
+                    let icon_bytes = include_bytes!("../images/iconV04.ico");
+                    if let Ok(img) = image::load_from_memory_with_format(icon_bytes, image::ImageFormat::Ico) {
+                        let rgba = img.into_rgba8();
+                        let (w, h) = (rgba.width(), rgba.height());
+                        if let Ok(icon) = winit::window::Icon::from_rgba(rgba.into_raw(), w, h) {
+                            winit_win.set_window_icon(Some(icon));
                         }
                     }
                 });
