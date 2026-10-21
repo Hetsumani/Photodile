@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::ComponentHandle;
@@ -21,22 +22,42 @@ mod viewport;
 slint::include_modules!();
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux under native Wayland, Winit 0.30 lacks Wayland Drag & Drop (wl_data_device) support,
+        // which causes the event loop and compositor (e.g. KWin in KDE Plasma / Nobara) to stall or deadlock
+        // when dragging files from Dolphin. Running via XWayland provides full Xdnd drag-and-drop
+        // support seamlessly. If DISPLAY is set and PHOTODILE_PREFER_WAYLAND is not requested, prefer X11/XWayland.
+        if std::env::var("PHOTODILE_PREFER_WAYLAND").is_err() && std::env::var("DISPLAY").is_ok() {
+            std::env::remove_var("WAYLAND_DISPLAY");
+            std::env::remove_var("WAYLAND_SOCKET");
+        }
+    }
+
     let ui = AppWindow::new()?;
-    let state = Rc::new(RefCell::new(state::AppState::new()));
+    let state = Arc::new(Mutex::new(state::AppState::new()));
 
     // 1. File Opening Callbacks
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_open_single_file(move || {
-            let file = rfd::FileDialog::new()
-                .set_title("Open Photo")
-                .add_filter("Images", formats::SUPPORTED_EXTENSIONS)
-                .pick_file();
+            let ui_weak = ui_weak.clone();
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let file = rfd::FileDialog::new()
+                    .set_title("Open Photo")
+                    .add_filter("Images", formats::SUPPORTED_EXTENSIONS)
+                    .pick_file();
 
-            if let (Some(path), Some(ui)) = (file, ui_weak.upgrade()) {
-                state.borrow_mut().load_paths(&ui, vec![path], false);
-            }
+                if let Some(path) = file {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            state::AppState::load_paths(&state, &ui, vec![path], false);
+                        }
+                    });
+                }
+            });
         });
     }
 
@@ -44,14 +65,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_open_multi_files(move || {
-            let files = rfd::FileDialog::new()
-                .set_title("Open Multiple Photos")
-                .add_filter("Images", formats::SUPPORTED_EXTENSIONS)
-                .pick_files();
+            let ui_weak = ui_weak.clone();
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let files = rfd::FileDialog::new()
+                    .set_title("Open Multiple Photos")
+                    .add_filter("Images", formats::SUPPORTED_EXTENSIONS)
+                    .pick_files();
 
-            if let (Some(paths), Some(ui)) = (files, ui_weak.upgrade()) {
-                state.borrow_mut().load_paths(&ui, paths, false);
-            }
+                if let Some(paths) = files {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            state::AppState::load_paths(&state, &ui, paths, false);
+                        }
+                    });
+                }
+            });
         });
     }
 
@@ -59,13 +88,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_open_folder(move || {
-            let folder = rfd::FileDialog::new()
-                .set_title("Open Photo Folder")
-                .pick_folder();
+            let ui_weak = ui_weak.clone();
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let folder = rfd::FileDialog::new()
+                    .set_title("Open Photo Folder")
+                    .pick_folder();
 
-            if let (Some(path), Some(ui)) = (folder, ui_weak.upgrade()) {
-                state.borrow_mut().load_paths(&ui, vec![path], false);
-            }
+                if let Some(path) = folder {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            state::AppState::load_paths(&state, &ui, vec![path], false);
+                        }
+                    });
+                }
+            });
         });
     }
 
@@ -73,14 +110,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_add_images(move || {
-            let files = rfd::FileDialog::new()
-                .set_title("Add Photos to Session")
-                .add_filter("Images", formats::SUPPORTED_EXTENSIONS)
-                .pick_files();
+            let ui_weak = ui_weak.clone();
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let files = rfd::FileDialog::new()
+                    .set_title("Add Photos to Session")
+                    .add_filter("Images", formats::SUPPORTED_EXTENSIONS)
+                    .pick_files();
 
-            if let (Some(paths), Some(ui)) = (files, ui_weak.upgrade()) {
-                state.borrow_mut().load_paths(&ui, paths, true);
-            }
+                if let Some(paths) = files {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            state::AppState::load_paths(&state, &ui, paths, true);
+                        }
+                    });
+                }
+            });
         });
     }
 
@@ -89,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_clear_session(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                state.borrow_mut().clear_session(&ui);
+                state.lock().unwrap().clear_session(&ui);
             }
         });
     }
@@ -99,9 +144,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_save_as(move || {
-            let s = state.borrow();
-            let photo = match s.current_photo.as_ref() {
-                Some(p) => p,
+            let s = state.lock().unwrap();
+            let photo_img = match s.current_photo.as_ref() {
+                Some(p) => p.image.clone(),
                 None => return,
             };
 
@@ -110,39 +155,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|idx| s.session_files.get(idx))
                 .and_then(|p| p.file_stem())
                 .and_then(|s| s.to_str())
-                .unwrap_or("export");
+                .unwrap_or("export")
+                .to_string();
+            drop(s);
 
-            let dialog = rfd::FileDialog::new()
-                .set_title("Save Photo As")
-                .set_file_name(format!("{}.png", default_stem))
-                .add_filter("PNG Image (*.png)", &["png"])
-                .add_filter("JPEG Image (*.jpg, *.jpeg)", &["jpg", "jpeg"])
-                .add_filter("WebP Image (*.webp)", &["webp"])
-                .add_filter("AVIF Image (*.avif)", &["avif"])
-                .add_filter("TIFF Image (*.tif, *.tiff)", &["tif", "tiff"])
-                .add_filter("QOI Image (*.qoi)", &["qoi"])
-                .add_filter("BMP Image (*.bmp)", &["bmp"])
-                .add_filter("OpenEXR HDR (*.exr)", &["exr"])
-                .add_filter("TGA Image (*.tga)", &["tga"]);
+            let ui_weak = ui_weak.clone();
+            std::thread::spawn(move || {
+                let dialog = rfd::FileDialog::new()
+                    .set_title("Save Photo As")
+                    .set_file_name(format!("{}.png", default_stem))
+                    .add_filter("PNG Image (*.png)", &["png"])
+                    .add_filter("JPEG Image (*.jpg, *.jpeg)", &["jpg", "jpeg"])
+                    .add_filter("WebP Image (*.webp)", &["webp"])
+                    .add_filter("AVIF Image (*.avif)", &["avif"])
+                    .add_filter("TIFF Image (*.tif, *.tiff)", &["tif", "tiff"])
+                    .add_filter("QOI Image (*.qoi)", &["qoi"])
+                    .add_filter("BMP Image (*.bmp)", &["bmp"])
+                    .add_filter("OpenEXR HDR (*.exr)", &["exr"])
+                    .add_filter("TGA Image (*.tga)", &["tga"]);
 
-            if let Some(dest) = dialog.save_file() {
-                let ext = dest
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("png");
-                let fmt = formats::ExportFormat::from_extension(ext);
-                if let Err(e) = formats::save_or_convert_image(&photo.image, &dest, fmt, 92) {
-                    eprintln!("Failed to save image to {:?}: {:?}", dest, e);
-                } else if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_filename(
-                        format!(
-                            "Saved: {}",
-                            dest.file_name().and_then(|s| s.to_str()).unwrap_or("")
-                        )
-                        .into(),
-                    );
+                if let Some(dest) = dialog.save_file() {
+                    let fname = dest
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("export")
+                        .to_string();
+                    let ui_weak_progress = ui_weak.clone();
+                    let fname_clone = fname.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak_progress.upgrade() {
+                            ui.set_is_loading(true);
+                            ui.set_loading_title(format!("Exporting {}", fname_clone).into());
+                            ui.set_loading_progress(0.5);
+                            ui.set_loading_stage("Encoding and saving to disk...".into());
+                        }
+                    });
+
+                    let ext = dest
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("png");
+                    let fmt = formats::ExportFormat::from_extension(ext);
+                    let res = formats::save_or_convert_image(&photo_img, &dest, fmt, 92);
+
+                    let ui_weak = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_is_loading(false);
+                            if let Err(e) = res {
+                                eprintln!("Failed to save image to {:?}: {:?}", dest, e);
+                                ui.set_current_filename(format!("Save error: {:?}", e).into());
+                            } else {
+                                ui.set_current_filename(format!("Saved: {}", fname).into());
+                            }
+                        }
+                    });
                 }
-            }
+            });
         });
     }
 
@@ -208,9 +277,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_show_convert_modal(false);
             }
 
-            let s = state.borrow();
-            let photo = match s.current_photo.as_ref() {
-                Some(p) => p,
+            let s = state.lock().unwrap();
+            let photo_img = match s.current_photo.as_ref() {
+                Some(p) => p.image.clone(),
                 None => return,
             };
 
@@ -220,31 +289,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|idx| s.session_files.get(idx))
                 .and_then(|p| p.file_stem())
                 .and_then(|s| s.to_str())
-                .unwrap_or("converted");
+                .unwrap_or("converted")
+                .to_string();
+            drop(s);
 
-            let dialog = rfd::FileDialog::new()
-                .set_title("Convert & Save As")
-                .set_file_name(format!("{}.{}", default_stem, format.extension()))
-                .add_filter(
-                    &format!("{:?} Image", format),
-                    &[format.extension()],
-                );
-
-            if let Some(dest) = dialog.save_file() {
-                if let Err(e) =
-                    formats::save_or_convert_image(&photo.image, &dest, format, quality as u8)
-                {
-                    eprintln!("Failed to convert image to {:?}: {:?}", dest, e);
-                } else if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_filename(
-                        format!(
-                            "Converted: {}",
-                            dest.file_name().and_then(|s| s.to_str()).unwrap_or("")
-                        )
-                        .into(),
+            let ui_weak = ui_weak.clone();
+            std::thread::spawn(move || {
+                let dialog = rfd::FileDialog::new()
+                    .set_title("Convert & Save As")
+                    .set_file_name(format!("{}.{}", default_stem, format.extension()))
+                    .add_filter(
+                        &format!("{:?} Image", format),
+                        &[format.extension()],
                     );
+
+                if let Some(dest) = dialog.save_file() {
+                    let fname = dest
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("converted")
+                        .to_string();
+                    let ui_weak_progress = ui_weak.clone();
+                    let fname_clone = fname.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak_progress.upgrade() {
+                            ui.set_is_loading(true);
+                            ui.set_loading_title(format!("Converting {}", fname_clone).into());
+                            ui.set_loading_progress(0.5);
+                            ui.set_loading_stage("Encoding target format...".into());
+                        }
+                    });
+
+                    let res =
+                        formats::save_or_convert_image(&photo_img, &dest, format, quality as u8);
+
+                    let ui_weak = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_is_loading(false);
+                            if let Err(e) = res {
+                                eprintln!("Failed to convert image to {:?}: {:?}", dest, e);
+                                ui.set_current_filename(format!("Convert error: {:?}", e).into());
+                            } else {
+                                ui.set_current_filename(format!("Converted: {}", fname).into());
+                            }
+                        }
+                    });
                 }
-            }
+            });
         });
     }
 
@@ -254,7 +346,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_zoom_in(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                let mut s = state.borrow_mut();
+                let mut s = state.lock().unwrap();
                 s.viewport.step_zoom(true);
                 s.sync_viewport_to_ui(&ui);
             }
@@ -266,7 +358,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_zoom_out(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                let mut s = state.borrow_mut();
+                let mut s = state.lock().unwrap();
                 s.viewport.step_zoom(false);
                 s.sync_viewport_to_ui(&ui);
             }
@@ -278,7 +370,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_zoom_fit(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                let mut s = state.borrow_mut();
+                let mut s = state.lock().unwrap();
                 let live_w = ui.get_live_canvas_width();
                 let live_h = ui.get_live_canvas_height();
                 if live_w > 10.0 && live_h > 10.0 {
@@ -296,7 +388,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_zoom_100(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                let mut s = state.borrow_mut();
+                let mut s = state.lock().unwrap();
                 s.viewport.set_zoom_100();
                 s.sync_viewport_to_ui(&ui);
             }
@@ -308,7 +400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_canvas_resized(move |w, h| {
             if let Some(ui) = ui_weak.upgrade() {
-                let mut s = state.borrow_mut();
+                let mut s = state.lock().unwrap();
                 s.viewport.set_viewport_dimensions(w, h);
                 s.sync_viewport_to_ui(&ui);
             }
@@ -323,7 +415,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ui) = ui_weak.upgrade() {
                 let space = ui.get_space_held();
                 let ctrl = ui.get_ctrl_held();
-                let started = state.borrow_mut().viewport.begin_pointer_drag(x, y, space, ctrl);
+                let started = state.lock().unwrap().viewport.begin_pointer_drag(x, y, space, ctrl);
                 if started {
                     ui.set_is_dragging_canvas(true);
                 }
@@ -335,7 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_canvas_pointer_move(move |x, y| {
-            let mut s = state.borrow_mut();
+            let mut s = state.lock().unwrap();
             if s.viewport.update_pointer_drag(x, y) {
                 if let Some(ui) = ui_weak.upgrade() {
                     s.sync_viewport_to_ui(&ui);
@@ -348,7 +440,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_canvas_pointer_up(move |_x, _y| {
-            state.borrow_mut().viewport.end_pointer_drag();
+            state.lock().unwrap().viewport.end_pointer_drag();
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_is_dragging_canvas(false);
             }
@@ -361,7 +453,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_canvas_scroll(move |delta_y, cursor_x, cursor_y| {
             if let Some(ui) = ui_weak.upgrade() {
-                let mut s = state.borrow_mut();
+                let mut s = state.lock().unwrap();
                 s.viewport.wheel_zoom(delta_y, cursor_x, cursor_y);
                 s.sync_viewport_to_ui(&ui);
             }
@@ -392,7 +484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_select_index(move |idx| {
             if let Some(ui) = ui_weak.upgrade() {
-                state.borrow_mut().select_index(&ui, idx as usize);
+                state::AppState::select_index(&state, &ui, idx as usize);
             }
         });
     }
@@ -402,7 +494,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_navigate_prev(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                state.borrow_mut().navigate_prev(&ui);
+                state::AppState::navigate_prev(&state, &ui);
             }
         });
     }
@@ -412,7 +504,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = state.clone();
         ui.on_navigate_next(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                state.borrow_mut().navigate_next(&ui);
+                state::AppState::navigate_next(&state, &ui);
             }
         });
     }
@@ -543,7 +635,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ui) = ui_weak.upgrade() {
                                 let paths: Vec<PathBuf> = batch.borrow_mut().drain(..).collect();
                                 if !paths.is_empty() {
-                                    state.borrow_mut().load_paths(&ui, paths, true);
+                                    state::AppState::load_paths(&state, &ui, paths, true);
                                 }
                             }
                         },
@@ -559,7 +651,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if !args.is_empty() {
         let initial_paths: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
-        state.borrow_mut().load_paths(&ui, initial_paths, false);
+        state::AppState::load_paths(&state, &ui, initial_paths, false);
     }
 
     ui.run()?;

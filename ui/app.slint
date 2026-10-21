@@ -310,6 +310,12 @@ export component AppWindow inherits Window {
     in-out property <string> current-file-size: "";
     in-out property <string> current-index-text: "";
 
+    // Loading & Progress Indicator
+    in-out property <bool> is-loading: false;
+    in-out property <float> loading-progress: 0.0;
+    in-out property <string> loading-title: "Loading Photo...";
+    in-out property <string> loading-stage: "";
+
     // Viewport transform
     in-out property <length> canvas-width: 800px;
     in-out property <length> canvas-height: 600px;
@@ -659,10 +665,50 @@ export component AppWindow inherits Window {
                         root.canvas-resized(self.width / 1px, self.height / 1px);
                     }
 
+                    // Rendered Image
+                    if root.has-image: Image {
+                        x: root.image-offset-x;
+                        y: root.image-offset-y;
+                        width: root.image-display-width;
+                        height: root.image-display-height;
+                        source: root.current-image;
+                        image-fit: fill;
+                        image-rendering: root.current-zoom >= 4.0 ? pixelated : smooth;
+                    }
+
+                    // Interactive TouchArea for Mouse Pan / Scrubby Zoom / Scroll
+                    canvas-touch := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        enabled: root.has-image;
+                        mouse-cursor: root.is-dragging-canvas ? (root.ctrl-held ? ew-resize : grabbing) : (root.space-held ? (root.ctrl-held ? ew-resize : grab) : default);
+
+                        pointer-event(event) => {
+                            if (root.active-menu != 0) {
+                                root.active-menu = 0;
+                            }
+                            if (event.kind == PointerEventKind.down) {
+                                root.canvas-pointer-down(self.mouse-x / 1px, self.mouse-y / 1px, 1);
+                            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                                root.canvas-pointer-up(self.mouse-x / 1px, self.mouse-y / 1px);
+                            }
+                        }
+
+                        moved => {
+                            root.canvas-pointer-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                        }
+
+                        scroll-event(event) => {
+                            root.canvas-scroll(event.delta-y / 1px, self.mouse-x / 1px, self.mouse-y / 1px);
+                            return accept;
+                        }
+                    }
+
                     // Empty State Prompt
                     if !root.has-image: Rectangle {
                         width: 100%;
                         height: 100%;
+                        z: 10;
                         VerticalLayout {
                             alignment: center;
                             spacing: 14px;
@@ -695,47 +741,9 @@ export component AppWindow inherits Window {
                                 spacing: 10px;
                                 padding-top: 8px;
 
-                                IconButton { text: "Open Photo"; clicked => { root.open-single-file(); } }
+                                IconButton { text: "Open File"; clicked => { root.open-single-file(); } }
                                 IconButton { text: "Open Folder"; clicked => { root.open-folder(); } }
                             }
-                        }
-                    }
-
-                    // Rendered Image
-                    if root.has-image: Image {
-                        x: root.image-offset-x;
-                        y: root.image-offset-y;
-                        width: root.image-display-width;
-                        height: root.image-display-height;
-                        source: root.current-image;
-                        image-fit: fill;
-                        image-rendering: root.current-zoom >= 4.0 ? pixelated : smooth;
-                    }
-
-                    // Interactive TouchArea for Mouse Pan / Scrubby Zoom / Scroll
-                    canvas-touch := TouchArea {
-                        width: 100%;
-                        height: 100%;
-                        mouse-cursor: root.is-dragging-canvas ? (root.ctrl-held ? ew-resize : grabbing) : (root.space-held ? (root.ctrl-held ? ew-resize : grab) : default);
-
-                        pointer-event(event) => {
-                            if (root.active-menu != 0) {
-                                root.active-menu = 0;
-                            }
-                            if (event.kind == PointerEventKind.down) {
-                                root.canvas-pointer-down(self.mouse-x / 1px, self.mouse-y / 1px, 1);
-                            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
-                                root.canvas-pointer-up(self.mouse-x / 1px, self.mouse-y / 1px);
-                            }
-                        }
-
-                        moved => {
-                            root.canvas-pointer-move(self.mouse-x / 1px, self.mouse-y / 1px);
-                        }
-
-                        scroll-event(event) => {
-                            root.canvas-scroll(event.delta-y / 1px, self.mouse-x / 1px, self.mouse-y / 1px);
-                            return accept;
                         }
                     }
 
@@ -757,6 +765,92 @@ export component AppWindow inherits Window {
                                 font-weight: 700;
                                 color: #93c5fd;
                                 horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Loading & Progress Overlay (Centered Floating Card)
+                    if root.is-loading: Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        background: #09090bcc;
+                        z: 30;
+
+                        // Click interceptor so clicking while loading doesn't trigger canvas gestures
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        // Floating Card
+                        Rectangle {
+                            width: 380px;
+                            height: 110px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            background: #18181b;
+                            border-radius: 10px;
+                            border-width: 1px;
+                            border-color: #2e2e33;
+                            drop-shadow-blur: 24px;
+                            drop-shadow-color: #000000bb;
+
+                            VerticalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                padding-top: 16px;
+                                padding-bottom: 16px;
+                                spacing: 10px;
+                                alignment: center;
+
+                                // Header row: Filename & Percentage
+                                HorizontalLayout {
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: root.loading-title;
+                                        color: #f4f4f5;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Text {
+                                        horizontal-stretch: 0;
+                                        text: Math.round(root.loading-progress * 100) + "%";
+                                        color: #60a5fa;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Progress track & animated fill bar
+                                Rectangle {
+                                    width: 100%;
+                                    height: 6px;
+                                    background: #27272a;
+                                    border-radius: 3px;
+                                    clip: true;
+
+                                    Rectangle {
+                                        x: 0px;
+                                        y: 0px;
+                                        height: 100%;
+                                        width: parent.width * Math.min(1.0, Math.max(0.02, root.loading-progress));
+                                        background: #3b82f6;
+                                        border-radius: 3px;
+                                        animate width { duration: 150ms; easing: ease-out; }
+                                    }
+                                }
+
+                                // Stage Description
+                                Text {
+                                    text: root.loading-stage != "" ? root.loading-stage : "Please wait...";
+                                    color: #a1a1aa;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
                             }
                         }
                     }

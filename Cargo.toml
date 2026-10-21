@@ -12,7 +12,7 @@ i-slint-backend-winit = "1.9"
 winit = "0.30"
 
 # File dialogs (Windows Win32, Linux XDG Desktop Portal in pure Rust)
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 
 # 100% pure-Rust image codecs
 image = { version = "0.25", default-features = false, features = [
@@ -38,6 +38,7 @@ bytemuck = "1.18"
 rayon = "1.10"
 natord = "1.0"
 anyhow = "1.0"
+urlencoding = "2.1"
 
 [build-dependencies]
 slint-build = "1.9"

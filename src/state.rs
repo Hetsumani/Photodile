@@ -6,14 +6,18 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use crate::formats::{decode_photo, is_supported_image, make_thumbnail_buffer, to_slint_image, LoadedPhoto};
-use crate::{AppWindow, ExifEntry, FilmstripItem};
+use crate::formats::{
+    decode_photo, decode_photo_with_progress, is_supported_image, make_rgba_pixel_buffer,
+    make_thumbnail_buffer, LoadedPhoto,
+};
 use crate::viewport::Viewport;
+use crate::{AppWindow, ExifEntry, FilmstripItem};
 
 pub struct AppState {
     pub session_files: Vec<PathBuf>,
@@ -21,6 +25,8 @@ pub struct AppState {
     pub current_photo: Option<LoadedPhoto>,
     pub viewport: Viewport,
     pub generation_id: Arc<AtomicUsize>,
+    pub load_request_id: Arc<AtomicUsize>,
+    pub is_loading_main: Arc<AtomicBool>,
 }
 
 impl Default for AppState {
@@ -31,6 +37,8 @@ impl Default for AppState {
             current_photo: None,
             viewport: Viewport::new(),
             generation_id: Arc::new(AtomicUsize::new(0)),
+            load_request_id: Arc::new(AtomicUsize::new(0)),
+            is_loading_main: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -61,10 +69,24 @@ impl AppState {
     }
 
     /// Loads dropped or selected file/folder paths into the session.
-    pub fn load_paths(&mut self, ui: &AppWindow, raw_paths: Vec<PathBuf>, append: bool) {
+    pub fn load_paths(state: &Arc<Mutex<AppState>>, ui: &AppWindow, raw_paths: Vec<PathBuf>, append: bool) {
         let mut new_files = Vec::new();
 
         for path in raw_paths {
+            let path = if let Some(path_str) = path.to_str() {
+                if path_str.starts_with("file://") {
+                    let stripped = &path_str[7..];
+                    let decoded = urlencoding::decode(stripped)
+                        .map(|d| d.into_owned())
+                        .unwrap_or_else(|_| stripped.to_string());
+                    PathBuf::from(decoded)
+                } else {
+                    path
+                }
+            } else {
+                path
+            };
+
             if path.is_dir() {
                 let mut dir_files = Self::scan_directory(&path);
                 new_files.append(&mut dir_files);
@@ -77,169 +99,294 @@ impl AppState {
             return;
         }
 
-        let start_index = if append {
-            let existing_set: HashSet<_> = self.session_files.iter().cloned().collect();
-            let added_index = self.session_files.len();
-            for file in new_files {
-                if !existing_set.contains(&file) {
-                    self.session_files.push(file);
+        let (target_idx, session_files_clone) = {
+            let mut s = state.lock().unwrap();
+
+            let start_index = if append {
+                let existing_set: HashSet<_> = s.session_files.iter().cloned().collect();
+                let added_index = s.session_files.len();
+                for file in new_files {
+                    if !existing_set.contains(&file) {
+                        s.session_files.push(file);
+                    }
                 }
+                added_index
+            } else {
+                s.session_files = new_files;
+                0
+            };
+
+            if s.session_files.is_empty() {
+                return;
             }
-            added_index
-        } else {
-            self.session_files = new_files;
-            0
+
+            // Show filmstrip automatically if more than 1 image is loaded
+            let show_filmstrip = s.session_files.len() > 1;
+            ui.set_show_filmstrip(show_filmstrip);
+
+            // Populate initial filmstrip model (with placeholders for thumbnails)
+            let filmstrip_items: Vec<FilmstripItem> = s
+                .session_files
+                .iter()
+                .enumerate()
+                .map(|(idx, path)| {
+                    let filename = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("image")
+                        .to_string();
+                    FilmstripItem {
+                        index: idx as i32,
+                        filename: filename.into(),
+                        thumbnail: slint::Image::default(),
+                        has_thumbnail: false,
+                    }
+                })
+                .collect();
+
+            let model = Rc::new(VecModel::from(filmstrip_items));
+            ui.set_filmstrip_items(ModelRc::from(model.clone()));
+
+            // Select initial photo: keep existing if appending, otherwise select first new
+            let target = if append && s.active_index.is_some() {
+                s.active_index.unwrap().min(s.session_files.len() - 1)
+            } else {
+                start_index.min(s.session_files.len() - 1)
+            };
+
+            (target, s.session_files.clone())
         };
 
-        if self.session_files.is_empty() {
-            return;
-        }
-
-        // Show filmstrip automatically if more than 1 image is loaded
-        let show_filmstrip = self.session_files.len() > 1;
-        ui.set_show_filmstrip(show_filmstrip);
-
-        // Populate initial filmstrip model (with placeholders for thumbnails)
-        let filmstrip_items: Vec<FilmstripItem> = self
-            .session_files
-            .iter()
-            .enumerate()
-            .map(|(idx, path)| {
-                let filename = path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("image")
-                    .to_string();
-                FilmstripItem {
-                    index: idx as i32,
-                    filename: filename.into(),
-                    thumbnail: slint::Image::default(),
-                    has_thumbnail: false,
-                }
-            })
-            .collect();
-
-        let model = Rc::new(VecModel::from(filmstrip_items));
-        ui.set_filmstrip_items(ModelRc::from(model.clone()));
-
-        // Select initial photo: keep existing if appending, otherwise select first new
-        let target_idx = if append && self.active_index.is_some() {
-            self.active_index.unwrap().min(self.session_files.len() - 1)
-        } else {
-            start_index.min(self.session_files.len() - 1)
-        };
-        self.select_index(ui, target_idx);
+        // Select photo asynchronously with progress tracking
+        Self::select_index(state, ui, target_idx);
 
         // Spawn async background thumbnail worker pool
-        self.spawn_thumbnail_generation(ui.as_weak(), self.session_files.clone());
+        state.lock().unwrap().spawn_thumbnail_generation(ui.as_weak(), session_files_clone);
     }
 
-    /// Selects an image by index and loads it into the viewer.
-    pub fn select_index(&mut self, ui: &AppWindow, index: usize) {
-        if index >= self.session_files.len() {
-            return;
-        }
-
-        self.active_index = Some(index);
-        ui.set_active_index(index as i32);
-
-        let path = &self.session_files[index];
-        match decode_photo(path) {
-            Ok(photo) => {
-                let (w, h) = (photo.image.width() as f32, photo.image.height() as f32);
-                let slint_img = to_slint_image(&photo.image);
-
-                // Update UI state
-                ui.set_has_image(true);
-                ui.set_current_image(slint_img);
-                ui.set_current_filename(
-                    path.file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("")
-                        .into(),
-                );
-                ui.set_current_dimensions(format!("{} × {} px", w as u32, h as u32).into());
-                ui.set_current_format(photo.format_name.clone().into());
-                ui.set_current_file_size(format_file_size(photo.file_size_bytes).into());
-                ui.set_current_index_text(
-                    format!("{} / {}", index + 1, self.session_files.len()).into(),
-                );
-
-                // Populate EXIF sidebar entries
-                let mut exif_entries = Vec::new();
-                if let Some(ref make) = photo.exif.camera_make {
-                    exif_entries.push(ExifEntry { label: "Make".into(), value: make.clone().into() });
-                }
-                if let Some(ref model) = photo.exif.camera_model {
-                    exif_entries.push(ExifEntry { label: "Camera".into(), value: model.clone().into() });
-                }
-                if let Some(ref lens) = photo.exif.lens_model {
-                    exif_entries.push(ExifEntry { label: "Lens".into(), value: lens.clone().into() });
-                }
-                if let Some(ref fl) = photo.exif.focal_length {
-                    exif_entries.push(ExifEntry { label: "Focal Length".into(), value: fl.clone().into() });
-                }
-                if let Some(ref ap) = photo.exif.aperture {
-                    exif_entries.push(ExifEntry { label: "Aperture".into(), value: ap.clone().into() });
-                }
-                if let Some(ref ss) = photo.exif.shutter_speed {
-                    exif_entries.push(ExifEntry { label: "Shutter".into(), value: ss.clone().into() });
-                }
-                if let Some(ref iso) = photo.exif.iso {
-                    exif_entries.push(ExifEntry { label: "ISO".into(), value: iso.clone().into() });
-                }
-                if let Some(ref dt) = photo.exif.date_taken {
-                    exif_entries.push(ExifEntry { label: "Date Taken".into(), value: dt.clone().into() });
-                }
-                exif_entries.push(ExifEntry {
-                    label: "Megapixels".into(),
-                    value: format!("{:.1} MP", (w * h) / 1_000_000.0).into(),
-                });
-                exif_entries.push(ExifEntry {
-                    label: "File Size".into(),
-                    value: format_file_size(photo.file_size_bytes).into(),
-                });
-                exif_entries.push(ExifEntry {
-                    label: "Full Path".into(),
-                    value: path.to_string_lossy().to_string().into(),
-                });
-
-                let exif_model = Rc::new(VecModel::from(exif_entries));
-                ui.set_exif_entries(ModelRc::from(exif_model));
-
-                // Sync live canvas dimensions before fitting
-                let live_w = ui.get_live_canvas_width();
-                let live_h = ui.get_live_canvas_height();
-                if live_w > 10.0 && live_h > 10.0 {
-                    self.viewport.vp_w = live_w;
-                    self.viewport.vp_h = live_h;
-                }
-
-                // Configure viewport and fit image
-                self.viewport.set_image_dimensions(w, h);
-                self.sync_viewport_to_ui(ui);
-
-                self.current_photo = Some(photo);
+    /// Selects an image by index and loads it into the viewer asynchronously with progress reporting.
+    pub fn select_index(state: &Arc<Mutex<AppState>>, ui: &AppWindow, index: usize) {
+        let (path, filename, req_id, req_tracker, is_loading_main) = {
+            let mut s = state.lock().unwrap();
+            if index >= s.session_files.len() {
+                return;
             }
-            Err(err) => {
-                eprintln!("Error decoding image {:?}: {:?}", path, err);
-                ui.set_current_filename(format!("Error loading: {:?}", err).into());
+
+            s.active_index = Some(index);
+            ui.set_active_index(index as i32);
+
+            let path = s.session_files[index].clone();
+            let filename = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("photo")
+                .to_string();
+
+            let req_id = s.load_request_id.fetch_add(1, Ordering::SeqCst) + 1;
+            s.is_loading_main.store(true, Ordering::SeqCst);
+
+            (
+                path,
+                filename,
+                req_id,
+                s.load_request_id.clone(),
+                s.is_loading_main.clone(),
+            )
+        };
+
+        let ui_weak = ui.as_weak();
+        let state_clone = state.clone();
+
+        std::thread::spawn(move || {
+            let start_time = Instant::now();
+            let progress_shown = Arc::new(AtomicBool::new(false));
+
+            let progress_shown_clone = progress_shown.clone();
+            let ui_weak_progress = ui_weak.clone();
+            let req_tracker_progress = req_tracker.clone();
+            let fname = filename.clone();
+
+            let progress_cb = move |pct: f32, stage: &str| {
+                if req_tracker_progress.load(Ordering::SeqCst) != req_id {
+                    return;
+                }
+                // Smart threshold: only show UI card if >= 100ms elapsed (or already shown)
+                if progress_shown_clone.load(Ordering::SeqCst)
+                    || start_time.elapsed() >= Duration::from_millis(100)
+                {
+                    progress_shown_clone.store(true, Ordering::SeqCst);
+                    let ui_weak = ui_weak_progress.clone();
+                    let title = fname.clone();
+                    let stg = stage.to_string();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_is_loading(true);
+                            ui.set_loading_title(title.into());
+                            ui.set_loading_progress(pct);
+                            ui.set_loading_stage(stg.into());
+                        }
+                    });
+                }
+            };
+
+            let decode_res = decode_photo_with_progress(&path, progress_cb);
+
+            if req_tracker.load(Ordering::SeqCst) != req_id {
+                return;
             }
-        }
+
+            match decode_res {
+                Ok(photo) => {
+                    let (rgba_buf, w, h) = make_rgba_pixel_buffer(&photo.image);
+                    let thumb_buf = make_thumbnail_buffer(&photo.image);
+
+                    let ui_weak = ui_weak.clone();
+                    let state = state_clone.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if req_tracker.load(Ordering::SeqCst) != req_id {
+                            return;
+                        }
+                        if let Some(ui) = ui_weak.upgrade() {
+                            let mut s = state.lock().unwrap();
+                            s.apply_loaded_photo(
+                                &ui,
+                                index,
+                                &path,
+                                photo,
+                                rgba_buf,
+                                w,
+                                h,
+                                thumb_buf,
+                            );
+                            ui.set_is_loading(false);
+                            is_loading_main.store(false, Ordering::SeqCst);
+                        }
+                    });
+                }
+                Err(err) => {
+                    eprintln!("Error decoding image {:?}: {:?}", path, err);
+                    let ui_weak = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if req_tracker.load(Ordering::SeqCst) != req_id {
+                            return;
+                        }
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_is_loading(false);
+                            ui.set_current_filename(format!("Error loading: {:?}", err).into());
+                            is_loading_main.store(false, Ordering::SeqCst);
+                        }
+                    });
+                }
+            }
+        });
     }
 
-    pub fn navigate_prev(&mut self, ui: &AppWindow) {
-        if let Some(idx) = self.active_index {
+    /// Applies the newly decoded photo to the UI and internal viewport state.
+    pub fn apply_loaded_photo(
+        &mut self,
+        ui: &AppWindow,
+        index: usize,
+        path: &Path,
+        photo: LoadedPhoto,
+        rgba_buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+        w: u32,
+        h: u32,
+        thumb_buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+    ) {
+        let slint_img = slint::Image::from_rgba8(rgba_buf);
+        let slint_thumb = slint::Image::from_rgba8(thumb_buf);
+
+        // Update UI state
+        ui.set_has_image(true);
+        ui.set_current_image(slint_img);
+        ui.invoke_set_thumbnail(index as i32, slint_thumb);
+        ui.set_current_filename(
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .into(),
+        );
+        ui.set_current_dimensions(format!("{} × {} px", w, h).into());
+        ui.set_current_format(photo.format_name.clone().into());
+        ui.set_current_file_size(format_file_size(photo.file_size_bytes).into());
+        ui.set_current_index_text(
+            format!("{} / {}", index + 1, self.session_files.len()).into(),
+        );
+
+        // Populate EXIF sidebar entries
+        let mut exif_entries = Vec::new();
+        if let Some(ref make) = photo.exif.camera_make {
+            exif_entries.push(ExifEntry { label: "Make".into(), value: make.clone().into() });
+        }
+        if let Some(ref model) = photo.exif.camera_model {
+            exif_entries.push(ExifEntry { label: "Camera".into(), value: model.clone().into() });
+        }
+        if let Some(ref lens) = photo.exif.lens_model {
+            exif_entries.push(ExifEntry { label: "Lens".into(), value: lens.clone().into() });
+        }
+        if let Some(ref fl) = photo.exif.focal_length {
+            exif_entries.push(ExifEntry { label: "Focal Length".into(), value: fl.clone().into() });
+        }
+        if let Some(ref ap) = photo.exif.aperture {
+            exif_entries.push(ExifEntry { label: "Aperture".into(), value: ap.clone().into() });
+        }
+        if let Some(ref ss) = photo.exif.shutter_speed {
+            exif_entries.push(ExifEntry { label: "Shutter".into(), value: ss.clone().into() });
+        }
+        if let Some(ref iso) = photo.exif.iso {
+            exif_entries.push(ExifEntry { label: "ISO".into(), value: iso.clone().into() });
+        }
+        if let Some(ref dt) = photo.exif.date_taken {
+            exif_entries.push(ExifEntry { label: "Date Taken".into(), value: dt.clone().into() });
+        }
+        exif_entries.push(ExifEntry {
+            label: "Megapixels".into(),
+            value: format!("{:.1} MP", (w as f32 * h as f32) / 1_000_000.0).into(),
+        });
+        exif_entries.push(ExifEntry {
+            label: "File Size".into(),
+            value: format_file_size(photo.file_size_bytes).into(),
+        });
+        exif_entries.push(ExifEntry {
+            label: "Full Path".into(),
+            value: path.to_string_lossy().to_string().into(),
+        });
+
+        let exif_model = Rc::new(VecModel::from(exif_entries));
+        ui.set_exif_entries(ModelRc::from(exif_model));
+
+        // Sync live canvas dimensions before fitting
+        let live_w = ui.get_live_canvas_width();
+        let live_h = ui.get_live_canvas_height();
+        if live_w > 10.0 && live_h > 10.0 {
+            self.viewport.vp_w = live_w;
+            self.viewport.vp_h = live_h;
+        }
+
+        // Configure viewport and fit image
+        self.viewport.set_image_dimensions(w as f32, h as f32);
+        self.sync_viewport_to_ui(ui);
+
+        self.current_photo = Some(photo);
+    }
+
+    pub fn navigate_prev(state: &Arc<Mutex<AppState>>, ui: &AppWindow) {
+        let idx_opt = state.lock().unwrap().active_index;
+        if let Some(idx) = idx_opt {
             if idx > 0 {
-                self.select_index(ui, idx - 1);
+                Self::select_index(state, ui, idx - 1);
             }
         }
     }
 
-    pub fn navigate_next(&mut self, ui: &AppWindow) {
-        if let Some(idx) = self.active_index {
-            if idx + 1 < self.session_files.len() {
-                self.select_index(ui, idx + 1);
+    pub fn navigate_next(state: &Arc<Mutex<AppState>>, ui: &AppWindow) {
+        let (idx_opt, total) = {
+            let s = state.lock().unwrap();
+            (s.active_index, s.session_files.len())
+        };
+        if let Some(idx) = idx_opt {
+            if idx + 1 < total {
+                Self::select_index(state, ui, idx + 1);
             }
         }
     }
@@ -249,6 +396,8 @@ impl AppState {
         self.active_index = None;
         self.current_photo = None;
         self.viewport = Viewport::new();
+        self.is_loading_main.store(false, Ordering::SeqCst);
+        ui.set_is_loading(false);
         ui.set_has_image(false);
         ui.set_current_image(slint::Image::default());
         ui.set_current_filename("No photo open".into());
@@ -272,19 +421,28 @@ impl AppState {
     }
 
     /// Background asynchronous thumbnail generation worker pool.
-    fn spawn_thumbnail_generation(
+    pub fn spawn_thumbnail_generation(
         &self,
         ui_weak: slint::Weak<AppWindow>,
         paths: Vec<PathBuf>,
     ) {
         let current_gen = self.generation_id.fetch_add(1, Ordering::SeqCst) + 1;
         let gen_tracker = self.generation_id.clone();
+        let is_loading_main = self.is_loading_main.clone();
 
         std::thread::spawn(move || {
             for (idx, path) in paths.into_iter().enumerate() {
                 // If a newer session has started, abort this batch
                 if gen_tracker.load(Ordering::SeqCst) != current_gen {
                     return;
+                }
+
+                // If the main photo is currently decoding, wait to give full CPU to the active photo
+                while is_loading_main.load(Ordering::SeqCst) {
+                    if gen_tracker.load(Ordering::SeqCst) != current_gen {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
                 }
 
                 if let Ok(photo) = decode_photo(&path) {
@@ -313,4 +471,3 @@ fn format_file_size(bytes: u64) -> String {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
 }
-

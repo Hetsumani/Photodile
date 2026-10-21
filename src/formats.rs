@@ -49,6 +49,15 @@ pub struct LoadedPhoto {
 
 /// Decodes any supported photography format into a `DynamicImage` with EXIF orientation auto-applied.
 pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
+    decode_photo_with_progress(path, |_, _| {})
+}
+
+/// Decodes any supported photography format into a `DynamicImage` with progress callbacks.
+pub fn decode_photo_with_progress<F>(path: &Path, mut progress: F) -> Result<LoadedPhoto>
+where
+    F: FnMut(f32, &str),
+{
+    progress(0.05, "Reading file & EXIF metadata...");
     let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let exif = parse_exif(path);
     let ext = path
@@ -59,6 +68,7 @@ pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
 
     let (mut img, format_name) = match ext.as_str() {
         "svg" | "svgz" => {
+            progress(0.20, "Parsing SVG vector data...");
             let data = std::fs::read(path).context("Failed to read SVG file")?;
             let opt = resvg::usvg::Options::default();
             let tree = resvg::usvg::Tree::from_data(&data, &opt)
@@ -77,6 +87,7 @@ pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
             let render_w = (width as f32 * scale_factor).round() as u32;
             let render_h = (height as f32 * scale_factor).round() as u32;
 
+            progress(0.50, "Rasterizing SVG canvas...");
             let mut pixmap = tiny_skia::Pixmap::new(render_w, render_h)
                 .ok_or_else(|| anyhow!("Failed to allocate Pixmap for SVG"))?;
             
@@ -89,7 +100,9 @@ pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
         }
 
         "psd" => {
+            progress(0.20, "Reading PSD data...");
             let data = std::fs::read(path).context("Failed to read PSD file")?;
+            progress(0.50, "Parsing Photoshop layers & composite...");
             let psd = psd::Psd::from_bytes(&data)
                 .map_err(|e| anyhow!("Failed to parse PSD: {:?}", e))?;
             let width = psd.width();
@@ -101,9 +114,11 @@ pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
         }
 
         "jxl" => {
+            progress(0.20, "Opening JPEG XL image...");
             let jxl = jxl_oxide::JxlImage::builder()
                 .open(path)
                 .map_err(|e| anyhow!("Failed to open JXL: {:?}", e))?;
+            progress(0.50, "Rendering JXL frame...");
             let render = jxl
                 .render_frame(0)
                 .map_err(|e| anyhow!("Failed to render JXL frame: {:?}", e))?;
@@ -127,11 +142,11 @@ pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
 
         "dng" | "cr2" | "cr3" | "nef" | "nrw" | "arw" | "srf" | "sr2" | "orf" | "rw2" | "pef"
         | "raf" | "srw" | "erf" | "kdc" | "dcr" | "mos" | "mef" | "mrw" => {
-            // Attempt Camera RAW decoding
-            match decode_camera_raw(path) {
+            progress(0.20, "Decoding Camera RAW sensor data...");
+            match decode_camera_raw_with_progress(path, &mut progress) {
                 Ok(raw_img) => (raw_img, ext.to_uppercase()),
                 Err(_) => {
-                    // Fallback to standard image reader if camera raw fails
+                    progress(0.60, "Fallback: reading RAW preview stream...");
                     let reader = image::ImageReader::open(path)?.with_guessed_format()?;
                     let fmt = reader.format().map(|f| format!("{:?}", f)).unwrap_or_else(|| ext.to_uppercase());
                     let decoded = reader.decode()?;
@@ -141,6 +156,7 @@ pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
         }
 
         _ => {
+            progress(0.25, "Decoding image stream...");
             let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
             // Relax memory limits for photography
             let mut limits = image::Limits::default();
@@ -160,8 +176,11 @@ pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
 
     // Auto-orient based on camera EXIF tags
     if exif.orientation > 1 {
+        progress(0.85, "Applying EXIF orientation...");
         img = apply_exif_orientation(img, exif.orientation);
     }
+
+    progress(0.95, "Finalizing image buffer...");
 
     Ok(LoadedPhoto {
         image: img,
@@ -171,16 +190,24 @@ pub fn decode_photo(path: &Path) -> Result<LoadedPhoto> {
     })
 }
 
-fn decode_camera_raw(path: &Path) -> Result<DynamicImage> {
+fn decode_camera_raw_with_progress<F>(path: &Path, progress: &mut F) -> Result<DynamicImage>
+where
+    F: FnMut(f32, &str),
+{
+    progress(0.25, "Decoding Camera RAW sensor data...");
     let raw = rawloader::decode_file(path)
         .map_err(|e| anyhow!("Camera RAW decode error: {:?}", e))?;
 
+    progress(0.50, "Developing sRGB color pipeline...");
     let mut pipeline = imagepipe::Pipeline::new_from_source(imagepipe::ImageSource::Raw(raw))
         .map_err(|e| anyhow!("imagepipe pipeline init error: {:?}", e))?;
+
+    progress(0.70, "Demosaicing & generating 8-bit sRGB pixels...");
     let srgb_data = pipeline
         .output_8bit(None)
         .map_err(|e| anyhow!("imagepipe sRGB output error: {:?}", e))?;
 
+    progress(0.85, "Constructing pixel buffer...");
     let rgb = image::RgbImage::from_raw(
         srgb_data.width as u32,
         srgb_data.height as u32,
@@ -191,11 +218,18 @@ fn decode_camera_raw(path: &Path) -> Result<DynamicImage> {
 }
 
 /// Converts a `DynamicImage` to a `slint::Image`
+#[allow(dead_code)]
 pub fn to_slint_image(img: &DynamicImage) -> slint::Image {
+    let (buffer, _, _) = make_rgba_pixel_buffer(img);
+    slint::Image::from_rgba8(buffer)
+}
+
+/// Builds a thread-safe `SharedPixelBuffer<Rgba8Pixel>` from a `DynamicImage`
+pub fn make_rgba_pixel_buffer(img: &DynamicImage) -> (slint::SharedPixelBuffer<slint::Rgba8Pixel>, u32, u32) {
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let buffer = slint::SharedPixelBuffer::clone_from_slice(rgba.as_raw(), width, height);
-    slint::Image::from_rgba8(buffer)
+    (buffer, width, height)
 }
 
 /// Generates a thread-safe thumbnail pixel buffer for the filmstrip
@@ -419,6 +453,29 @@ mod tests {
             let _ = std::fs::remove_file(target_path);
         }
 
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_decode_photo_with_progress() {
+        let temp_dir = std::env::temp_dir().join("photodile_progress_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let target_path = temp_dir.join("test_progress.png");
+
+        let original = make_test_image(32, 32);
+        save_or_convert_image(&original, &target_path, ExportFormat::Png, 90).unwrap();
+
+        let mut reports = Vec::new();
+        let loaded = decode_photo_with_progress(&target_path, |p, stage| {
+            reports.push((p, stage.to_string()));
+        }).expect("Failed to decode with progress");
+
+        assert_eq!(loaded.image.width(), 32);
+        assert!(!reports.is_empty());
+        assert!(reports.first().unwrap().0 <= 0.1);
+        assert!(reports.last().unwrap().0 >= 0.9);
+
+        let _ = std::fs::remove_file(target_path);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
