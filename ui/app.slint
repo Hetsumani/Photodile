@@ -310,6 +310,7 @@ export component AppWindow inherits Window {
     in-out property <string> current-format: "";
     in-out property <string> current-file-size: "";
     in-out property <string> current-index-text: "";
+    in-out property <string> app-version: "v0.3.0";
 
     // Loading & Progress Indicator
     in-out property <bool> is-loading: false;
@@ -1500,7 +1501,7 @@ export component AppWindow inherits Window {
                                     padding-right: 6px;
                                     alignment: center;
                                     Text {
-                                        text: "v0.2.0";
+                                        text: root.app-version;
                                         font-size: 11px;
                                         font-weight: 600;
                                         color: #60a5fa;

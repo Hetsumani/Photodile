@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ui = AppWindow::new()?;
+    ui.set_app_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
     let state = Arc::new(Mutex::new(state::AppState::new()));
 
     // 1. File Opening Callbacks
@@ -649,6 +650,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6. Handle Command-Line Arguments on Startup
     let args: Vec<String> = std::env::args().skip(1).collect();
     if !args.is_empty() {
+        if args.iter().any(|a| a == "--version" || a == "-V" || a == "-v") {
+            println!("photodile {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
         let initial_paths: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
         state::AppState::load_paths(&state, &ui, initial_paths, false);
     }
