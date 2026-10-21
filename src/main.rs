@@ -16,12 +16,36 @@ use slint::ComponentHandle;
 
 mod exif_meta;
 mod formats;
+mod single_instance;
 mod state;
 mod viewport;
 
 slint::include_modules!();
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 0. Process CLI flags before UI or IPC
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V" || a == "-v") {
+        println!("photodile {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let initial_paths: Vec<PathBuf> = args
+        .into_iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(|s| single_instance::normalize_path(std::path::Path::new(&s)))
+        .filter(|p| p.exists())
+        .collect();
+
+    // Single-instance coordination: if secondary, forward paths to primary and exit cleanly
+    let mut server = match single_instance::init(&initial_paths)? {
+        single_instance::InstanceRole::Secondary => {
+            return Ok(());
+        }
+        single_instance::InstanceRole::Primary(s) => s,
+    };
+    let ipc_rx = server.take_receiver();
+
     #[cfg(target_os = "linux")]
     {
         // On Linux under native Wayland, Winit 0.30 lacks Wayland Drag & Drop (wl_data_device) support,
@@ -647,17 +671,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // 6. Handle Command-Line Arguments on Startup
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if !args.is_empty() {
-        if args.iter().any(|a| a == "--version" || a == "-V" || a == "-v") {
-            println!("photodile {}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
+    // 7. Load Startup Paths and Start Background IPC Forwarder
+    let mut startup_paths = initial_paths;
+    if let Some(ref rx) = ipc_rx {
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                single_instance::IpcMessage::Paths(paths) => startup_paths.extend(paths),
+                single_instance::IpcMessage::Focus => {}
+            }
         }
-        let initial_paths: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
-        state::AppState::load_paths(&state, &ui, initial_paths, false);
+    }
+    if !startup_paths.is_empty() {
+        state::AppState::load_paths(&state, &ui, startup_paths, false);
     }
 
+    if let Some(rx) = ipc_rx {
+        let ui_weak = ui.as_weak();
+        let state = state.clone();
+        std::thread::spawn(move || {
+            while let Ok(first_msg) = rx.recv() {
+                let mut paths_to_send = Vec::new();
+                match first_msg {
+                    single_instance::IpcMessage::Paths(p) => paths_to_send.extend(p),
+                    single_instance::IpcMessage::Focus => {}
+                }
+
+                // Batch any subsequent messages arriving within 50ms
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+                while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    if let Ok(next_msg) = rx.recv_timeout(remaining) {
+                        match next_msg {
+                            single_instance::IpcMessage::Paths(p) => paths_to_send.extend(p),
+                            single_instance::IpcMessage::Focus => {}
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                let ui_weak = ui_weak.clone();
+                let state = state.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        if !paths_to_send.is_empty() {
+                            state::AppState::load_paths(&state, &ui, paths_to_send, true);
+                        }
+                        ui.window().with_winit_window(|winit_win| {
+                            winit_win.set_minimized(false);
+                            winit_win.focus_window();
+                            winit_win.request_user_attention(Some(
+                                winit::window::UserAttentionType::Informational,
+                            ));
+                        });
+                    }
+                });
+            }
+        });
+    }
+
+    let _server_guard = server;
     ui.run()?;
     Ok(())
 }
