@@ -3,8 +3,9 @@
 //! Coordinates file scanning, image loading, filmstrip thumbnail generation,
 //! and synchronization with the Slint UI.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,15 @@ use crate::formats::{
 use crate::viewport::Viewport;
 use crate::{AppWindow, ExifEntry, FilmstripItem};
 
+#[derive(Clone)]
+pub struct CachedPhoto {
+    pub photo: Arc<LoadedPhoto>,
+    pub rgba_buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+    pub w: u32,
+    pub h: u32,
+    pub thumb_buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+}
+
 pub struct AppState {
     pub session_files: Vec<PathBuf>,
     pub active_index: Option<usize>,
@@ -27,6 +37,9 @@ pub struct AppState {
     pub generation_id: Arc<AtomicUsize>,
     pub load_request_id: Arc<AtomicUsize>,
     pub is_loading_main: Arc<AtomicBool>,
+    pub image_cache: HashMap<PathBuf, CachedPhoto>,
+    pub preload_request_id: Arc<AtomicUsize>,
+    pub transition_id: Arc<AtomicUsize>,
 }
 
 impl Default for AppState {
@@ -39,6 +52,9 @@ impl Default for AppState {
             generation_id: Arc::new(AtomicUsize::new(0)),
             load_request_id: Arc::new(AtomicUsize::new(0)),
             is_loading_main: Arc::new(AtomicBool::new(false)),
+            image_cache: HashMap::new(),
+            preload_request_id: Arc::new(AtomicUsize::new(0)),
+            transition_id: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -113,6 +129,11 @@ impl AppState {
                 added_index
             } else {
                 s.session_files = new_files;
+                s.image_cache.clear();
+                s.preload_request_id.fetch_add(1, Ordering::SeqCst);
+                s.transition_id.fetch_add(1, Ordering::SeqCst);
+                ui.set_has_prev_image(false);
+                ui.set_crossfade_progress(1.0);
                 0
             };
 
@@ -164,9 +185,91 @@ impl AppState {
         state.lock().unwrap().spawn_thumbnail_generation(ui.as_weak(), session_files_clone);
     }
 
+    /// Preloads up to 4 neighbor images (+1, -1, +2, -2) around the current active photo in the background.
+    pub fn preload_neighbors(state: &Arc<Mutex<AppState>>, current_idx: usize) {
+        let (req_id, req_tracker, needed) = {
+            let mut s = state.lock().unwrap();
+            let total = s.session_files.len();
+            if total <= 1 {
+                return;
+            }
+
+            let req_id = s.preload_request_id.fetch_add(1, Ordering::SeqCst) + 1;
+
+            // Neighbor candidate indices in priority order: +1, -1, +2, -2
+            let mut candidates = Vec::new();
+            if current_idx + 1 < total {
+                candidates.push(current_idx + 1);
+            }
+            if current_idx > 0 {
+                candidates.push(current_idx - 1);
+            }
+            if current_idx + 2 < total {
+                candidates.push(current_idx + 2);
+            }
+            if current_idx >= 2 {
+                candidates.push(current_idx - 2);
+            }
+
+            // Prune cache: retain only active photo and up to 4 neighbor candidate photos
+            let keep_paths: HashSet<PathBuf> = candidates
+                .iter()
+                .chain(std::iter::once(&current_idx))
+                .filter_map(|&idx| s.session_files.get(idx).cloned())
+                .collect();
+
+            s.image_cache.retain(|path, _| keep_paths.contains(path));
+
+            // Identify which candidate paths are not yet cached
+            let mut needed = Vec::new();
+            for idx in candidates {
+                if let Some(path) = s.session_files.get(idx) {
+                    if !s.image_cache.contains_key(path) {
+                        needed.push((idx, path.clone()));
+                    }
+                }
+            }
+
+            (req_id, s.preload_request_id.clone(), needed)
+        };
+
+        if needed.is_empty() {
+            return;
+        }
+
+        let state_clone = state.clone();
+        std::thread::spawn(move || {
+            for (_idx, path) in needed {
+                if req_tracker.load(Ordering::SeqCst) != req_id {
+                    return;
+                }
+
+                if let Ok(photo) = decode_photo(&path) {
+                    if req_tracker.load(Ordering::SeqCst) != req_id {
+                        return;
+                    }
+                    let (rgba_buf, w, h) = make_rgba_pixel_buffer(&photo.image);
+                    let thumb_buf = make_thumbnail_buffer(&photo.image);
+                    let cached = CachedPhoto {
+                        photo: Arc::new(photo),
+                        rgba_buf,
+                        w,
+                        h,
+                        thumb_buf,
+                    };
+
+                    let mut s = state_clone.lock().unwrap();
+                    if req_tracker.load(Ordering::SeqCst) == req_id {
+                        s.image_cache.insert(path, cached);
+                    }
+                }
+            }
+        });
+    }
+
     /// Selects an image by index and loads it into the viewer asynchronously with progress reporting.
     pub fn select_index(state: &Arc<Mutex<AppState>>, ui: &AppWindow, index: usize) {
-        let (path, filename, req_id, req_tracker, is_loading_main) = {
+        let (path, filename, req_id, req_tracker, is_loading_main, cached_hit) = {
             let mut s = state.lock().unwrap();
             if index >= s.session_files.len() {
                 return;
@@ -183,7 +286,7 @@ impl AppState {
                 .to_string();
 
             let req_id = s.load_request_id.fetch_add(1, Ordering::SeqCst) + 1;
-            s.is_loading_main.store(true, Ordering::SeqCst);
+            let cached_hit = s.image_cache.get(&path).cloned();
 
             (
                 path,
@@ -191,9 +294,24 @@ impl AppState {
                 req_id,
                 s.load_request_id.clone(),
                 s.is_loading_main.clone(),
+                cached_hit,
             )
         };
 
+        // Cache fast-path: instant display and smooth transition without disk wait
+        if let Some(cached) = cached_hit {
+            is_loading_main.store(false, Ordering::SeqCst);
+            ui.set_is_loading(false);
+            {
+                let mut s = state.lock().unwrap();
+                s.apply_cached_photo(ui, index, &path, cached);
+            }
+            Self::preload_neighbors(state, index);
+            return;
+        }
+
+        // Cache miss: decode asynchronously with progress reporting
+        is_loading_main.store(true, Ordering::SeqCst);
         let ui_weak = ui.as_weak();
         let state_clone = state.clone();
 
@@ -239,28 +357,34 @@ impl AppState {
                 Ok(photo) => {
                     let (rgba_buf, w, h) = make_rgba_pixel_buffer(&photo.image);
                     let thumb_buf = make_thumbnail_buffer(&photo.image);
+                    let cached = CachedPhoto {
+                        photo: Arc::new(photo),
+                        rgba_buf,
+                        w,
+                        h,
+                        thumb_buf,
+                    };
 
                     let ui_weak = ui_weak.clone();
                     let state = state_clone.clone();
+                    let path_clone = path.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if req_tracker.load(Ordering::SeqCst) != req_id {
                             return;
                         }
                         if let Some(ui) = ui_weak.upgrade() {
                             let mut s = state.lock().unwrap();
-                            s.apply_loaded_photo(
+                            s.image_cache.insert(path_clone.clone(), cached.clone());
+                            s.apply_cached_photo(
                                 &ui,
                                 index,
-                                &path,
-                                photo,
-                                rgba_buf,
-                                w,
-                                h,
-                                thumb_buf,
+                                &path_clone,
+                                cached,
                             );
                             ui.set_is_loading(false);
                             is_loading_main.store(false, Ordering::SeqCst);
                         }
+                        Self::preload_neighbors(&state, index);
                     });
                 }
                 Err(err) => {
@@ -281,22 +405,37 @@ impl AppState {
         });
     }
 
-    /// Applies the newly decoded photo to the UI and internal viewport state.
-    pub fn apply_loaded_photo(
+    /// Applies a cached photo to the UI and internal viewport state, triggering a crossfade transition if enabled.
+    pub fn apply_cached_photo(
         &mut self,
         ui: &AppWindow,
         index: usize,
         path: &Path,
-        photo: LoadedPhoto,
-        rgba_buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
-        w: u32,
-        h: u32,
-        thumb_buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+        cached: CachedPhoto,
     ) {
-        let slint_img = slint::Image::from_rgba8(rgba_buf);
-        let slint_thumb = slint::Image::from_rgba8(thumb_buf);
+        let slint_img = slint::Image::from_rgba8(cached.rgba_buf);
+        let slint_thumb = slint::Image::from_rgba8(cached.thumb_buf);
+        let (w, h) = (cached.w, cached.h);
+        let photo = cached.photo;
 
-        // Update UI state
+        let old_has_image = ui.get_has_image();
+        let transition_mode = ui.get_transition_mode().to_string();
+
+        if old_has_image && transition_mode == "crossfade" {
+            // Save currently displayed photo as previous outgoing photo
+            ui.set_prev_image(ui.get_current_image());
+            ui.set_prev_image_offset_x(ui.get_image_offset_x());
+            ui.set_prev_image_offset_y(ui.get_image_offset_y());
+            ui.set_prev_image_display_width(ui.get_image_display_width());
+            ui.set_prev_image_display_height(ui.get_image_display_height());
+            ui.set_has_prev_image(true);
+            ui.set_crossfade_progress(0.0);
+        } else {
+            ui.set_has_prev_image(false);
+            ui.set_crossfade_progress(1.0);
+        }
+
+        // Update UI state with new photo
         ui.set_has_image(true);
         ui.set_current_image(slint_img);
         ui.invoke_set_thumbnail(index as i32, slint_thumb);
@@ -450,7 +589,70 @@ impl AppState {
         self.viewport.set_image_dimensions(w as f32, h as f32);
         self.sync_viewport_to_ui(ui);
 
-        self.current_photo = Some(photo);
+        // Trigger smooth 60 FPS crossfade transition if enabled
+        if old_has_image && transition_mode == "crossfade" {
+            let start = Instant::now();
+            let trans_id = self.transition_id.fetch_add(1, Ordering::SeqCst) + 1;
+            let trans_id_tracker = self.transition_id.clone();
+            let ui_weak = ui.as_weak();
+            let timer = Rc::new(RefCell::new(slint::Timer::default()));
+            let timer_clone = timer.clone();
+
+            timer.borrow_mut().start(
+                slint::TimerMode::Repeated,
+                Duration::from_millis(16),
+                move || {
+                    if trans_id_tracker.load(Ordering::SeqCst) != trans_id {
+                        timer_clone.borrow().stop();
+                        return;
+                    }
+                    let elapsed = start.elapsed().as_secs_f32();
+                    let t = (elapsed / 0.500).min(1.0);
+                    // Smooth ease-in-out curve
+                    let progress = if t < 0.5 {
+                        2.0 * t * t
+                    } else {
+                        -1.0 + (4.0 - 2.0 * t) * t
+                    };
+
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_crossfade_progress(progress);
+                        if t >= 1.0 {
+                            ui.set_has_prev_image(false);
+                            ui.set_crossfade_progress(1.0);
+                            timer_clone.borrow().stop();
+                        }
+                    } else {
+                        timer_clone.borrow().stop();
+                    }
+                },
+            );
+        }
+
+        self.current_photo = Some((*photo).clone());
+    }
+
+    /// Applies the newly decoded photo to the UI and internal viewport state.
+    #[allow(dead_code)]
+    pub fn apply_loaded_photo(
+        &mut self,
+        ui: &AppWindow,
+        index: usize,
+        path: &Path,
+        photo: LoadedPhoto,
+        rgba_buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+        w: u32,
+        h: u32,
+        thumb_buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+    ) {
+        let cached = CachedPhoto {
+            photo: Arc::new(photo),
+            rgba_buf,
+            w,
+            h,
+            thumb_buf,
+        };
+        self.apply_cached_photo(ui, index, path, cached);
     }
 
     pub fn navigate_prev(state: &Arc<Mutex<AppState>>, ui: &AppWindow) {
@@ -478,11 +680,17 @@ impl AppState {
         self.session_files.clear();
         self.active_index = None;
         self.current_photo = None;
+        self.image_cache.clear();
+        self.preload_request_id.fetch_add(1, Ordering::SeqCst);
+        self.transition_id.fetch_add(1, Ordering::SeqCst);
         self.viewport = Viewport::new();
         self.is_loading_main.store(false, Ordering::SeqCst);
         ui.set_is_loading(false);
         ui.set_has_image(false);
+        ui.set_has_prev_image(false);
+        ui.set_crossfade_progress(1.0);
         ui.set_current_image(slint::Image::default());
+        ui.set_prev_image(slint::Image::default());
         ui.set_current_filename("No photo open".into());
         ui.set_current_dimensions("".into());
         ui.set_current_format("".into());
@@ -552,5 +760,93 @@ fn format_file_size(bytes: u64) -> String {
         format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_neighbor_candidates_window() {
+        let total = 10;
+        let get_candidates = |idx: usize| -> Vec<usize> {
+            let mut candidates = Vec::new();
+            if idx + 1 < total {
+                candidates.push(idx + 1);
+            }
+            if idx > 0 {
+                candidates.push(idx - 1);
+            }
+            if idx + 2 < total {
+                candidates.push(idx + 2);
+            }
+            if idx >= 2 {
+                candidates.push(idx - 2);
+            }
+            candidates
+        };
+
+        // First image in sequence: only forward neighbors available
+        assert_eq!(get_candidates(0), vec![1, 2]);
+
+        // Middle image: balanced +1, -1, +2, -2
+        assert_eq!(get_candidates(4), vec![5, 3, 6, 2]);
+
+        // Last image: only backward neighbors available
+        assert_eq!(get_candidates(9), vec![8, 7]);
+    }
+
+    #[test]
+    fn test_cache_pruning_bounds() {
+        let mut state = AppState::new();
+        state.session_files = (0..10).map(|i| PathBuf::from(format!("img_{}.jpg", i))).collect();
+
+        // Simulate population of cache with artificial entries
+        for path in &state.session_files {
+            state.image_cache.insert(
+                path.clone(),
+                CachedPhoto {
+                    photo: Arc::new(LoadedPhoto {
+                        image: image::DynamicImage::new_rgb8(1, 1),
+                        format_name: "JPEG".into(),
+                        exif: Default::default(),
+                        file_size_bytes: 100,
+                    }),
+                    rgba_buf: slint::SharedPixelBuffer::new(1, 1),
+                    w: 1,
+                    h: 1,
+                    thumb_buf: slint::SharedPixelBuffer::new(1, 1),
+                },
+            );
+        }
+        assert_eq!(state.image_cache.len(), 10);
+
+        // When navigating to index 4, keep_paths = {4, 5, 3, 6, 2}
+        let current_idx = 4;
+        let total = state.session_files.len();
+        let mut candidates = Vec::new();
+        if current_idx + 1 < total { candidates.push(current_idx + 1); }
+        if current_idx > 0 { candidates.push(current_idx - 1); }
+        if current_idx + 2 < total { candidates.push(current_idx + 2); }
+        if current_idx >= 2 { candidates.push(current_idx - 2); }
+
+        let keep_paths: HashSet<PathBuf> = candidates
+            .iter()
+            .chain(std::iter::once(&current_idx))
+            .filter_map(|&idx| state.session_files.get(idx).cloned())
+            .collect();
+
+        state.image_cache.retain(|path, _| keep_paths.contains(path));
+
+        // Bounded to 5: active photo + up to 4 neighbors
+        assert_eq!(state.image_cache.len(), 5);
+        assert!(state.image_cache.contains_key(&PathBuf::from("img_4.jpg")));
+        assert!(state.image_cache.contains_key(&PathBuf::from("img_5.jpg")));
+        assert!(state.image_cache.contains_key(&PathBuf::from("img_3.jpg")));
+        assert!(state.image_cache.contains_key(&PathBuf::from("img_6.jpg")));
+        assert!(state.image_cache.contains_key(&PathBuf::from("img_2.jpg")));
+        assert!(!state.image_cache.contains_key(&PathBuf::from("img_0.jpg")));
+        assert!(!state.image_cache.contains_key(&PathBuf::from("img_9.jpg")));
     }
 }

@@ -40,6 +40,7 @@ pub fn is_supported_image(path: &Path) -> bool {
     }
 }
 
+#[derive(Clone)]
 pub struct LoadedPhoto {
     pub image: DynamicImage,
     pub format_name: String,

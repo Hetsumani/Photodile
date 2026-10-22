@@ -110,11 +110,20 @@ component MenuItem inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> checked: false;
     in property <bool> has-check: false;
+    in property <bool> has-submenu: false;
+    out property <bool> has-hover: touch.has-hover;
     callback clicked();
+    callback hovered();
 
     height: 28px;
     border-radius: 4px;
     background: !root.enabled ? transparent : touch.pressed ? #3f3f46 : touch.has-hover ? #2a2a2f : transparent;
+
+    changed has-hover => {
+        if (self.has-hover && root.enabled) {
+            root.hovered();
+        }
+    }
 
     HorizontalLayout {
         padding-left: 10px;
@@ -143,6 +152,15 @@ component MenuItem inherits Rectangle {
             text: root.shortcut;
             color: !root.enabled ? #3f3f46 : #71717a;
             font-size: 11px;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+        }
+
+        if root.has-submenu: Text {
+            text: "›";
+            color: touch.has-hover ? #f4f4f5 : #71717a;
+            font-size: 15px;
+            font-weight: 700;
             vertical-alignment: center;
             horizontal-alignment: right;
         }
@@ -358,6 +376,17 @@ export component AppWindow inherits Window {
     in-out property <float> current-zoom: 1.0;
     in-out property <string> zoom-percentage-text: "100%";
 
+    // Crossfade transition properties
+    in-out property <string> transition-mode: "crossfade"; // "off" or "crossfade"
+    in-out property <image> prev-image;
+    in-out property <bool> has-prev-image: false;
+    in-out property <length> prev-image-offset-x: 0px;
+    in-out property <length> prev-image-offset-y: 0px;
+    in-out property <length> prev-image-display-width: 0px;
+    in-out property <length> prev-image-display-height: 0px;
+    in-out property <float> crossfade-progress: 1.0;
+    in-out property <bool> show-transitions-submenu: false;
+
     // Filmstrip properties
     in-out property <[FilmstripItem]> filmstrip-items: [];
     in-out property <int> active-index: -1;
@@ -369,6 +398,12 @@ export component AppWindow inherits Window {
 
     changed active-index => {
         root.recenter-filmstrip();
+    }
+
+    changed active-menu => {
+        if (root.active-menu != 2) {
+            root.show-transitions-submenu = false;
+        }
     }
 
     public function recenter-filmstrip() {
@@ -551,7 +586,19 @@ export component AppWindow inherits Window {
                         root.canvas-resized(self.width / 1px, self.height / 1px);
                     }
 
-                    // Rendered Image
+                    // Previous Rendered Image (Outgoing in Crossfade)
+                    if root.has-prev-image && root.transition-mode == "crossfade": Image {
+                        x: root.prev-image-offset-x;
+                        y: root.prev-image-offset-y;
+                        width: root.prev-image-display-width;
+                        height: root.prev-image-display-height;
+                        source: root.prev-image;
+                        image-fit: fill;
+                        image-rendering: smooth;
+                        opacity: 1.0 - root.crossfade-progress;
+                    }
+
+                    // Rendered Image (Incoming / Main)
                     if root.has-image: Image {
                         x: root.image-offset-x;
                         y: root.image-offset-y;
@@ -560,6 +607,7 @@ export component AppWindow inherits Window {
                         source: root.current-image;
                         image-fit: fill;
                         image-rendering: root.current-zoom >= 4.0 ? pixelated : smooth;
+                        opacity: (root.has-prev-image && root.transition-mode == "crossfade") ? root.crossfade-progress : 1.0;
                     }
 
                     // Interactive TouchArea for Mouse Pan / Scrubby Zoom / Scroll
@@ -1340,22 +1388,71 @@ export component AppWindow inherits Window {
                 padding: 4px;
                 spacing: 2px;
 
-                MenuItem { text: "Fit to View"; shortcut: "0 / F"; enabled: root.has-image; clicked => { root.active-menu = 0; root.zoom-fit(); } }
-                MenuItem { text: "Actual Size (100%)"; shortcut: "1"; enabled: root.has-image; clicked => { root.active-menu = 0; root.zoom-100(); } }
-                MenuItem { text: "Zoom In"; shortcut: "+"; enabled: root.has-image; clicked => { root.active-menu = 0; root.zoom-in(); } }
-                MenuItem { text: "Zoom Out"; shortcut: "-"; enabled: root.has-image; clicked => { root.active-menu = 0; root.zoom-out(); } }
+                MenuItem { text: "Fit to View"; shortcut: "0 / F"; enabled: root.has-image; hovered => { root.show-transitions-submenu = false; } clicked => { root.active-menu = 0; root.zoom-fit(); } }
+                MenuItem { text: "Actual Size (100%)"; shortcut: "1"; enabled: root.has-image; hovered => { root.show-transitions-submenu = false; } clicked => { root.active-menu = 0; root.zoom-100(); } }
+                MenuItem { text: "Zoom In"; shortcut: "+"; enabled: root.has-image; hovered => { root.show-transitions-submenu = false; } clicked => { root.active-menu = 0; root.zoom-in(); } }
+                MenuItem { text: "Zoom Out"; shortcut: "-"; enabled: root.has-image; hovered => { root.show-transitions-submenu = false; } clicked => { root.active-menu = 0; root.zoom-out(); } }
                 MenuSeparator {}
-                MenuItem { text: "Filmstrip"; shortcut: "T"; has-check: true; checked: root.show-filmstrip; enabled: root.filmstrip-items.length > 0; clicked => { root.active-menu = 0; root.toggle-filmstrip(); } }
-                MenuItem { text: "Photo Details & EXIF"; shortcut: "I"; has-check: true; checked: root.show-info; enabled: root.has-image; clicked => { root.active-menu = 0; root.toggle-info(); } }
+                MenuItem { text: "Filmstrip"; shortcut: "T"; has-check: true; checked: root.show-filmstrip; enabled: root.filmstrip-items.length > 0; hovered => { root.show-transitions-submenu = false; } clicked => { root.active-menu = 0; root.toggle-filmstrip(); } }
+                MenuItem { text: "Photo Details & EXIF"; shortcut: "I"; has-check: true; checked: root.show-info; enabled: root.has-image; hovered => { root.show-transitions-submenu = false; } clicked => { root.active-menu = 0; root.toggle-info(); } }
+                MenuSeparator {}
+                MenuItem {
+                    text: "Transitions";
+                    has-submenu: true;
+                    hovered => { root.show-transitions-submenu = true; }
+                    clicked => { root.show-transitions-submenu = !root.show-transitions-submenu; }
+                }
                 MenuSeparator {}
                 MenuItem {
                     text: "Fullscreen";
                     shortcut: "F11";
                     has-check: true;
                     checked: root.is-window-fullscreen;
+                    hovered => { root.show-transitions-submenu = false; }
                     clicked => {
                         root.active-menu = 0;
                         root.window-toggle-fullscreen();
+                    }
+                }
+            }
+        }
+
+        // "TRANSITIONS" FLYOUT SUBMENU
+        if root.active-menu == 2 && root.show-transitions-submenu: Rectangle {
+            x: 300px;
+            y: 230px;
+            width: 150px;
+            height: 66px;
+            z: 110;
+            background: #18181b;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #2e2e33;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #000000aa;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                MenuItem {
+                    text: "Off";
+                    has-check: true;
+                    checked: root.transition-mode == "off";
+                    clicked => {
+                        root.transition-mode = "off";
+                        root.active-menu = 0;
+                        root.show-transitions-submenu = false;
+                    }
+                }
+                MenuItem {
+                    text: "Crossfade";
+                    has-check: true;
+                    checked: root.transition-mode == "crossfade";
+                    clicked => {
+                        root.transition-mode = "crossfade";
+                        root.active-menu = 0;
+                        root.show-transitions-submenu = false;
                     }
                 }
             }
