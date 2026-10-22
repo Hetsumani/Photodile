@@ -376,8 +376,8 @@ export component AppWindow inherits Window {
     in-out property <float> current-zoom: 1.0;
     in-out property <string> zoom-percentage-text: "100%";
 
-    // Crossfade transition properties
-    in-out property <string> transition-mode: "crossfade"; // "off" or "crossfade"
+    // Image navigation transition properties
+    in-out property <string> transition-mode: "slide"; // "off", "crossfade", or "slide"
     in-out property <image> prev-image;
     in-out property <bool> has-prev-image: false;
     in-out property <length> prev-image-offset-x: 0px;
@@ -385,6 +385,7 @@ export component AppWindow inherits Window {
     in-out property <length> prev-image-display-width: 0px;
     in-out property <length> prev-image-display-height: 0px;
     in-out property <float> crossfade-progress: 1.0;
+    in-out property <float> slide-direction: 1.0; // 1.0 = forward/leftward, -1.0 = backward/rightward
     in-out property <bool> show-transitions-submenu: false;
 
     // Filmstrip properties
@@ -586,28 +587,42 @@ export component AppWindow inherits Window {
                         root.canvas-resized(self.width / 1px, self.height / 1px);
                     }
 
-                    // Previous Rendered Image (Outgoing in Crossfade)
-                    if root.has-prev-image && root.transition-mode == "crossfade": Image {
-                        x: root.prev-image-offset-x;
+                    property <length> slide-travel: self.width + 24px;
+
+                    // Outgoing image base X coordinate
+                    property <length> prev-base-x: root.transition-mode == "slide"
+                        ? (root.prev-image-offset-x - (root.slide-direction * self.slide-travel * root.crossfade-progress))
+                        : root.prev-image-offset-x;
+
+                    // Main Outgoing Image Layer
+                    if root.has-prev-image && (root.transition-mode == "crossfade" || root.transition-mode == "slide"): Image {
+                        x: canvas-container.prev-base-x;
                         y: root.prev-image-offset-y;
                         width: root.prev-image-display-width;
                         height: root.prev-image-display-height;
                         source: root.prev-image;
                         image-fit: fill;
                         image-rendering: smooth;
-                        opacity: 1.0 - root.crossfade-progress;
+                        opacity: root.transition-mode == "crossfade" ? (1.0 - root.crossfade-progress) : 1.0;
                     }
 
-                    // Rendered Image (Incoming / Main)
+                    // Incoming image base X coordinate
+                    property <length> curr-base-x: (root.has-prev-image && root.transition-mode == "slide")
+                        ? (root.image-offset-x + (root.slide-direction * self.slide-travel * (1.0 - root.crossfade-progress)))
+                        : root.image-offset-x;
+
+                    // Main Incoming Image Layer
                     if root.has-image: Image {
-                        x: root.image-offset-x;
+                        x: canvas-container.curr-base-x;
                         y: root.image-offset-y;
                         width: root.image-display-width;
                         height: root.image-display-height;
                         source: root.current-image;
                         image-fit: fill;
                         image-rendering: root.current-zoom >= 4.0 ? pixelated : smooth;
-                        opacity: (root.has-prev-image && root.transition-mode == "crossfade") ? root.crossfade-progress : 1.0;
+                        opacity: (root.has-prev-image && root.transition-mode == "crossfade")
+                            ? root.crossfade-progress
+                            : 1.0;
                     }
 
                     // Interactive TouchArea for Mouse Pan / Scrubby Zoom / Scroll
@@ -1422,7 +1437,7 @@ export component AppWindow inherits Window {
             x: 300px;
             y: 230px;
             width: 150px;
-            height: 66px;
+            height: 96px;
             z: 110;
             background: #18181b;
             border-radius: 6px;
@@ -1451,6 +1466,16 @@ export component AppWindow inherits Window {
                     checked: root.transition-mode == "crossfade";
                     clicked => {
                         root.transition-mode = "crossfade";
+                        root.active-menu = 0;
+                        root.show-transitions-submenu = false;
+                    }
+                }
+                MenuItem {
+                    text: "Slide";
+                    has-check: true;
+                    checked: root.transition-mode == "slide";
+                    clicked => {
+                        root.transition-mode = "slide";
                         root.active-menu = 0;
                         root.show-transitions-submenu = false;
                     }

@@ -32,6 +32,7 @@ pub struct CachedPhoto {
 pub struct AppState {
     pub session_files: Vec<PathBuf>,
     pub active_index: Option<usize>,
+    pub displayed_index: Option<usize>,
     pub current_photo: Option<LoadedPhoto>,
     pub viewport: Viewport,
     pub generation_id: Arc<AtomicUsize>,
@@ -47,6 +48,7 @@ impl Default for AppState {
         Self {
             session_files: Vec::new(),
             active_index: None,
+            displayed_index: None,
             current_photo: None,
             viewport: Viewport::new(),
             generation_id: Arc::new(AtomicUsize::new(0)),
@@ -129,6 +131,7 @@ impl AppState {
                 added_index
             } else {
                 s.session_files = new_files;
+                s.displayed_index = None;
                 s.image_cache.clear();
                 s.preload_request_id.fetch_add(1, Ordering::SeqCst);
                 s.transition_id.fetch_add(1, Ordering::SeqCst);
@@ -421,7 +424,21 @@ impl AppState {
         let old_has_image = ui.get_has_image();
         let transition_mode = ui.get_transition_mode().to_string();
 
-        if old_has_image && transition_mode == "crossfade" {
+        let is_transitioning = old_has_image
+            && (transition_mode == "crossfade" || transition_mode == "slide")
+            && self.displayed_index != Some(index);
+
+        let slide_direction = if let Some(prev_idx) = self.displayed_index {
+            if index >= prev_idx {
+                1.0f32
+            } else {
+                -1.0f32
+            }
+        } else {
+            1.0f32
+        };
+
+        if is_transitioning {
             // Save currently displayed photo as previous outgoing photo
             ui.set_prev_image(ui.get_current_image());
             ui.set_prev_image_offset_x(ui.get_image_offset_x());
@@ -429,9 +446,11 @@ impl AppState {
             ui.set_prev_image_display_width(ui.get_image_display_width());
             ui.set_prev_image_display_height(ui.get_image_display_height());
             ui.set_has_prev_image(true);
+            ui.set_slide_direction(slide_direction);
             ui.set_crossfade_progress(0.0);
         } else {
             ui.set_has_prev_image(false);
+            ui.set_slide_direction(slide_direction);
             ui.set_crossfade_progress(1.0);
         }
 
@@ -589,14 +608,16 @@ impl AppState {
         self.viewport.set_image_dimensions(w as f32, h as f32);
         self.sync_viewport_to_ui(ui);
 
-        // Trigger smooth 60 FPS crossfade transition if enabled
-        if old_has_image && transition_mode == "crossfade" {
+        // Trigger smooth 60 FPS transition (Slide or Crossfade) if enabled
+        if is_transitioning {
             let start = Instant::now();
             let trans_id = self.transition_id.fetch_add(1, Ordering::SeqCst) + 1;
             let trans_id_tracker = self.transition_id.clone();
             let ui_weak = ui.as_weak();
             let timer = Rc::new(RefCell::new(slint::Timer::default()));
             let timer_clone = timer.clone();
+            let is_slide = transition_mode == "slide";
+            let duration_secs = if is_slide { 0.350f32 } else { 0.500f32 };
 
             timer.borrow_mut().start(
                 slint::TimerMode::Repeated,
@@ -607,12 +628,13 @@ impl AppState {
                         return;
                     }
                     let elapsed = start.elapsed().as_secs_f32();
-                    let t = (elapsed / 0.500).min(1.0);
-                    // Smooth ease-in-out curve
+                    let t = (elapsed / duration_secs).min(1.0);
+
+                    // Smooth cubic ease-in-out curve for position
                     let progress = if t < 0.5 {
-                        2.0 * t * t
+                        4.0 * t * t * t
                     } else {
-                        -1.0 + (4.0 - 2.0 * t) * t
+                        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
                     };
 
                     if let Some(ui) = ui_weak.upgrade() {
@@ -629,6 +651,7 @@ impl AppState {
             );
         }
 
+        self.displayed_index = Some(index);
         self.current_photo = Some((*photo).clone());
     }
 
@@ -679,6 +702,7 @@ impl AppState {
     pub fn clear_session(&mut self, ui: &AppWindow) {
         self.session_files.clear();
         self.active_index = None;
+        self.displayed_index = None;
         self.current_photo = None;
         self.image_cache.clear();
         self.preload_request_id.fetch_add(1, Ordering::SeqCst);
@@ -848,5 +872,31 @@ mod tests {
         assert!(state.image_cache.contains_key(&PathBuf::from("img_2.jpg")));
         assert!(!state.image_cache.contains_key(&PathBuf::from("img_0.jpg")));
         assert!(!state.image_cache.contains_key(&PathBuf::from("img_9.jpg")));
+    }
+
+    #[test]
+    fn test_slide_direction() {
+        let calc_direction = |prev_idx: Option<usize>, new_idx: usize| -> f32 {
+            if let Some(prev) = prev_idx {
+                if new_idx >= prev {
+                    1.0f32
+                } else {
+                    -1.0f32
+                }
+            } else {
+                1.0f32
+            }
+        };
+
+        // Forward navigation (Next / jump forward) -> 1.0 (slides out to left, in from right)
+        assert_eq!(calc_direction(Some(0), 1), 1.0);
+        assert_eq!(calc_direction(Some(2), 5), 1.0);
+
+        // Backward navigation (Prev / jump backward) -> -1.0 (slides out to right, in from left)
+        assert_eq!(calc_direction(Some(5), 4), -1.0);
+        assert_eq!(calc_direction(Some(3), 0), -1.0);
+
+        // First image opened (no previous index) -> defaults to 1.0
+        assert_eq!(calc_direction(None, 0), 1.0);
     }
 }
