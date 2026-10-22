@@ -161,8 +161,9 @@ component MenuSeparator inherits Rectangle {
 }
 
 component WindowControlButton inherits Rectangle {
-    in property <int> icon-type: 1; // 1 = Minimize, 2 = Maximize/Restore, 3 = Close
+    in property <int> icon-type: 1; // 1 = Minimize, 2 = Maximize/Restore, 3 = Close, 4 = Fullscreen
     in property <bool> is-maximized: false;
+    in property <bool> is-fullscreen: false;
     in property <bool> is-close: false;
     callback clicked();
 
@@ -235,6 +236,28 @@ component WindowControlButton inherits Rectangle {
         stroke-width: 1.3px;
     }
 
+    // Fullscreen Enter Icon (4-corner outward brackets)
+    if root.icon-type == 4 && !root.is-fullscreen: Path {
+        width: 10px;
+        height: 10px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        commands: "M 0 3.5 L 0 0 L 3.5 0 M 6.5 0 L 10 0 L 10 3.5 M 10 6.5 L 10 10 L 6.5 10 M 3.5 10 L 0 10 L 0 6.5";
+        stroke: root.icon-color;
+        stroke-width: 1.2px;
+    }
+
+    // Fullscreen Exit Icon (4-corner inward brackets)
+    if root.icon-type == 4 && root.is-fullscreen: Path {
+        width: 10px;
+        height: 10px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        commands: "M 0 3.5 L 3.5 3.5 L 3.5 0 M 6.5 0 L 6.5 3.5 L 10 3.5 M 10 6.5 L 6.5 6.5 L 6.5 10 M 3.5 10 L 3.5 6.5 L 0 6.5";
+        stroke: root.icon-color;
+        stroke-width: 1.2px;
+    }
+
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
@@ -296,9 +319,13 @@ export component AppWindow inherits Window {
 
     // Window management
     in-out property <bool> is-window-maximized: false;
+    in-out property <bool> is-window-fullscreen: false;
+    in-out property <bool> show-fullscreen-top-bar: false;
+    in-out property <bool> show-fullscreen-bottom-bar: false;
     callback window-drag();
     callback window-minimize();
     callback window-toggle-maximize();
+    callback window-toggle-fullscreen();
     callback window-close();
     callback window-resize(int); // 1=N, 2=S, 3=E, 4=W, 5=NE, 6=NW, 7=SE, 8=SW
 
@@ -459,6 +486,10 @@ export component AppWindow inherits Window {
                 root.toggle-info();
                 return accept;
             }
+            if (event.text == Key.F11) {
+                root.window-toggle-fullscreen();
+                return accept;
+            }
             if (event.text == Key.Escape) {
                 if (root.active-menu != 0) {
                     root.active-menu = 0;
@@ -470,6 +501,10 @@ export component AppWindow inherits Window {
                 }
                 if (root.show-about-modal) {
                     root.show-about-modal = false;
+                    return accept;
+                }
+                if (root.is-window-fullscreen) {
+                    root.window-toggle-fullscreen();
                     return accept;
                 }
             }
@@ -491,161 +526,10 @@ export component AppWindow inherits Window {
         VerticalLayout {
             spacing: 0px;
 
-            // TOP UNIFIED BAR (VSCode style)
+            // Top layout spacer: reserves 40px in windowed mode, collapses to 0px in fullscreen
             Rectangle {
-                height: 40px;
-                background: #141416;
-                z: 20;
-
-                Rectangle {
-                    y: parent.height - 1px;
-                    height: 1px;
-                    background: #232326;
-                }
-
-                HorizontalLayout {
-                    padding-left: 18px;
-                    padding-right: 0px;
-                    spacing: 0px;
-
-                    // Left Section: App Icon + File/View/Help Menus
-                    Rectangle {
-                        horizontal-stretch: 0;
-                        width: 195px;
-                        height: 40px;
-
-                        HorizontalLayout {
-                            x: 0px;
-                            y: (parent.height - self.height) / 2;
-                            spacing: 6px;
-
-                            Image {
-                                width: 22px;
-                                height: 22px;
-                                y: (parent.height - self.height) / 2;
-                                source: @image-url("../images/iconV04.png");
-                                image-fit: contain;
-                            }
-
-                            // "File" Menu Button
-                            file-btn := MenuBarButton {
-                                text: "File";
-                                open: root.active-menu == 1;
-                                y: (parent.height - self.height) / 2;
-                                clicked => {
-                                    root.active-menu = root.active-menu == 1 ? 0 : 1;
-                                }
-                            }
-
-                            // "View" Menu Button
-                            view-btn := MenuBarButton {
-                                text: "View";
-                                open: root.active-menu == 2;
-                                y: (parent.height - self.height) / 2;
-                                clicked => {
-                                    root.active-menu = root.active-menu == 2 ? 0 : 2;
-                                }
-                            }
-
-                            // "Help" Menu Button
-                            help-btn := MenuBarButton {
-                                text: "Help";
-                                open: root.active-menu == 3;
-                                y: (parent.height - self.height) / 2;
-                                clicked => {
-                                    root.active-menu = root.active-menu == 3 ? 0 : 3;
-                                }
-                            }
-                        }
-                    }
-
-                    // Center Draggable Window Title Area
-                    title-drag := Rectangle {
-                        horizontal-stretch: 1;
-                        height: 40px;
-
-                        Text {
-                            text: root.has-image ? root.current-filename + " — Photodile" : "Photodile";
-                            color: #a1a1aa;
-                            font-size: 12px;
-                            font-weight: 500;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-
-                        TouchArea {
-                            pointer-event(event) => {
-                                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
-                                    root.active-menu = 0;
-                                    root.window-drag();
-                                }
-                            }
-                            double-clicked => {
-                                root.window-toggle-maximize();
-                            }
-                        }
-                    }
-
-                    // Right Section: Quick View Toggles + Window Controls
-                    Rectangle {
-                        horizontal-stretch: 0;
-                        width: 280px;
-                        height: 40px;
-
-                        HorizontalLayout {
-                            x: 0px;
-                            y: 0px;
-                            width: 100%;
-                            height: 100%;
-                            spacing: 0px;
-                            alignment: end;
-
-                            HorizontalLayout {
-                                spacing: 6px;
-                                y: (parent.height - self.height) / 2;
-                                padding-right: 10px;
-
-                                IconButton {
-                                    text: "Filmstrip";
-                                    active: root.show-filmstrip;
-                                    enabled: root.filmstrip-items.length > 0;
-                                    clicked => { root.toggle-filmstrip(); }
-                                }
-                                IconButton {
-                                    text: "Info";
-                                    active: root.show-info;
-                                    enabled: root.has-image;
-                                    clicked => { root.toggle-info(); }
-                                }
-                            }
-
-                            // Subtle Divider
-                            Rectangle {
-                                width: 1px;
-                                height: 18px;
-                                background: #27272a;
-                                y: (parent.height - self.height) / 2;
-                            }
-
-                            // VSCode-style Vector Window Controls (Pinned to top-right corner)
-                            WindowControlButton {
-                                icon-type: 1;
-                                clicked => { root.window-minimize(); }
-                            }
-                            WindowControlButton {
-                                icon-type: 2;
-                                is-maximized: root.is-window-maximized;
-                                clicked => { root.window-toggle-maximize(); }
-                            }
-                            WindowControlButton {
-                                icon-type: 3;
-                                is-close: true;
-                                clicked => { root.window-close(); }
-                            }
-                        }
-                    }
-                }
+                height: root.is-window-fullscreen ? 0px : 40px;
+                horizontal-stretch: 1;
             }
 
             // MIDDLE AREA: Canvas + Optional Sidebar
@@ -1117,94 +1001,285 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // BOTTOM BAR (WITH ZOOM CONTROLS IN THE BOTTOM-LEFT CORNER)
+            // Bottom layout spacer: reserves 34px in windowed mode, collapses to 0px in fullscreen
             Rectangle {
-                height: 34px;
-                background: #111113;
+                height: root.is-window-fullscreen ? 0px : 34px;
+                horizontal-stretch: 1;
+            }
+        }
 
+        // TOP UNIFIED BAR (VSCode style, slides in/out in fullscreen)
+        top-bar := Rectangle {
+            x: 0px;
+            y: (!root.is-window-fullscreen || root.show-fullscreen-top-bar || root.active-menu != 0) ? 0px : -40px;
+            width: 100%;
+            height: 40px;
+            background: #141416;
+            z: 80;
+
+            animate y { duration: 150ms; easing: ease-out; }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: #232326;
+            }
+
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 0px;
+                spacing: 0px;
+
+                // Left Section: App Icon + File/View/Help Menus
                 Rectangle {
-                    y: 0px;
-                    width: 100%;
-                    height: 1px;
-                    background: #1f1f23;
-                }
+                    horizontal-stretch: 0;
+                    width: 195px;
+                    height: 40px;
 
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 12px;
-                    spacing: 8px;
+                    HorizontalLayout {
+                        x: 0px;
+                        y: (parent.height - self.height) / 2;
+                        spacing: 6px;
 
-                    // ZOOM OPTIONS IN BOTTOM-LEFT CORNER
-                    IconButton { text: "−"; enabled: root.has-image; clicked => { root.zoom-out(); } }
-                    Rectangle {
-                        width: 50px;
-                        height: 26px;
-                        background: #18181b;
-                        border-radius: 4px;
-                        border-width: 1px;
-                        border-color: #27272a;
-                        Text {
-                            text: root.zoom-percentage-text;
-                            color: #60a5fa;
-                            font-size: 11px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Image {
+                            width: 22px;
+                            height: 22px;
+                            y: (parent.height - self.height) / 2;
+                            source: @image-url("../images/iconV04.png");
+                            image-fit: contain;
+                        }
+
+                        // "File" Menu Button
+                        file-btn := MenuBarButton {
+                            text: "File";
+                            open: root.active-menu == 1;
+                            y: (parent.height - self.height) / 2;
+                            clicked => {
+                                root.active-menu = root.active-menu == 1 ? 0 : 1;
+                            }
+                        }
+
+                        // "View" Menu Button
+                        view-btn := MenuBarButton {
+                            text: "View";
+                            open: root.active-menu == 2;
+                            y: (parent.height - self.height) / 2;
+                            clicked => {
+                                root.active-menu = root.active-menu == 2 ? 0 : 2;
+                            }
+                        }
+
+                        // "Help" Menu Button
+                        help-btn := MenuBarButton {
+                            text: "Help";
+                            open: root.active-menu == 3;
+                            y: (parent.height - self.height) / 2;
+                            clicked => {
+                                root.active-menu = root.active-menu == 3 ? 0 : 3;
+                            }
                         }
                     }
-                    IconButton { text: "+"; enabled: root.has-image; clicked => { root.zoom-in(); } }
-                    IconButton { text: "Fit (0)"; enabled: root.has-image; clicked => { root.zoom-fit(); } }
-                    IconButton { text: "100% (1)"; enabled: root.has-image; clicked => { root.zoom-100(); } }
+                }
 
-                    // Separator
-                    Rectangle { width: 1px; height: 16px; background: #27272a; y: 9px; }
+                // Center Draggable Window Title Area
+                title-drag := Rectangle {
+                    horizontal-stretch: 1;
+                    height: 40px;
 
-                    // Photo Info Details
-                    if root.current-index-text != "": Text {
-                        text: root.current-index-text;
-                        color: #71717a;
+                    Text {
+                        text: root.has-image ? root.current-filename + " — Photodile" : "Photodile";
+                        color: #a1a1aa;
+                        font-size: 12px;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    TouchArea {
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                                root.active-menu = 0;
+                                if (!root.is-window-fullscreen) {
+                                    root.window-drag();
+                                }
+                            }
+                        }
+                        double-clicked => {
+                            if (root.is-window-fullscreen) {
+                                root.window-toggle-fullscreen();
+                            } else {
+                                root.window-toggle-maximize();
+                            }
+                        }
+                    }
+                }
+
+                // Right Section: Quick View Toggles + Window Controls
+                Rectangle {
+                    horizontal-stretch: 0;
+                    width: 326px;
+                    height: 40px;
+
+                    HorizontalLayout {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: 100%;
+                        spacing: 0px;
+                        alignment: end;
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            y: (parent.height - self.height) / 2;
+                            padding-right: 10px;
+
+                            IconButton {
+                                text: "Filmstrip";
+                                active: root.show-filmstrip;
+                                enabled: root.filmstrip-items.length > 0;
+                                clicked => { root.toggle-filmstrip(); }
+                            }
+                            IconButton {
+                                text: "Info";
+                                active: root.show-info;
+                                enabled: root.has-image;
+                                clicked => { root.toggle-info(); }
+                            }
+                        }
+
+                        // Subtle Divider
+                        Rectangle {
+                            width: 1px;
+                            height: 18px;
+                            background: #27272a;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        // VSCode-style Vector Window Controls (Pinned to top-right corner)
+                        WindowControlButton {
+                            icon-type: 1;
+                            clicked => { root.window-minimize(); }
+                        }
+                        WindowControlButton {
+                            icon-type: 4;
+                            is-fullscreen: root.is-window-fullscreen;
+                            clicked => { root.window-toggle-fullscreen(); }
+                        }
+                        WindowControlButton {
+                            icon-type: 2;
+                            is-maximized: root.is-window-maximized;
+                            clicked => {
+                                if (root.is-window-fullscreen) {
+                                    root.window-toggle-fullscreen();
+                                } else {
+                                    root.window-toggle-maximize();
+                                }
+                            }
+                        }
+                        WindowControlButton {
+                            icon-type: 3;
+                            is-close: true;
+                            clicked => { root.window-close(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // BOTTOM BAR (Slides in/out in fullscreen)
+        bottom-bar := Rectangle {
+            x: 0px;
+            y: (!root.is-window-fullscreen || root.show-fullscreen-bottom-bar) ? (parent.height - 34px) : parent.height;
+            width: 100%;
+            height: 34px;
+            background: #111113;
+            z: 80;
+
+            animate y { duration: 150ms; easing: ease-out; }
+
+            Rectangle {
+                y: 0px;
+                width: 100%;
+                height: 1px;
+                background: #1f1f23;
+            }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 12px;
+                spacing: 8px;
+
+                // ZOOM OPTIONS IN BOTTOM-LEFT CORNER
+                IconButton { text: "−"; enabled: root.has-image; clicked => { root.zoom-out(); } }
+                Rectangle {
+                    width: 50px;
+                    height: 26px;
+                    background: #18181b;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: #27272a;
+                    Text {
+                        text: root.zoom-percentage-text;
+                        color: #60a5fa;
                         font-size: 11px;
                         font-weight: 600;
+                        horizontal-alignment: center;
                         vertical-alignment: center;
                     }
+                }
+                IconButton { text: "+"; enabled: root.has-image; clicked => { root.zoom-in(); } }
+                IconButton { text: "Fit (0)"; enabled: root.has-image; clicked => { root.zoom-fit(); } }
+                IconButton { text: "100% (1)"; enabled: root.has-image; clicked => { root.zoom-100(); } }
 
-                    Text {
-                        text: root.current-filename;
-                        color: #d4d4d8;
-                        font-size: 11px;
-                        font-weight: 500;
-                        vertical-alignment: center;
-                    }
+                // Separator
+                Rectangle { width: 1px; height: 16px; background: #27272a; y: 9px; }
 
-                    if root.current-format != "": FormatBadge {
-                        text: root.current-format;
-                        y: 8px;
-                    }
+                // Photo Info Details
+                if root.current-index-text != "": Text {
+                    text: root.current-index-text;
+                    color: #71717a;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
 
-                    if root.current-dimensions != "": Text {
-                        text: root.current-dimensions;
-                        color: #a1a1aa;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
+                Text {
+                    text: root.current-filename;
+                    color: #d4d4d8;
+                    font-size: 11px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
 
-                    if root.current-file-size != "": Text {
-                        text: root.current-file-size;
-                        color: #71717a;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
+                if root.current-format != "": FormatBadge {
+                    text: root.current-format;
+                    y: 8px;
+                }
 
-                    // Spacer
-                    Rectangle { horizontal-stretch: 1; }
+                if root.current-dimensions != "": Text {
+                    text: root.current-dimensions;
+                    color: #a1a1aa;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
 
-                    // Navigation & Tool Hints
-                    Text {
-                        text: "Space+Drag: Pan | Space+Ctrl+Drag: Scrubby Zoom | Scroll: Zoom | Arrows: Prev/Next";
-                        color: #52525b;
-                        font-size: 10px;
-                        vertical-alignment: center;
-                    }
+                if root.current-file-size != "": Text {
+                    text: root.current-file-size;
+                    color: #71717a;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                // Spacer
+                Rectangle { horizontal-stretch: 1; }
+
+                // Navigation & Tool Hints
+                Text {
+                    text: "Space+Drag: Pan | Space+Ctrl+Drag: Scrubby Zoom | Scroll: Zoom | Arrows: Prev/Next";
+                    color: #52525b;
+                    font-size: 10px;
+                    vertical-alignment: center;
                 }
             }
         }
@@ -1272,6 +1347,17 @@ export component AppWindow inherits Window {
                 MenuSeparator {}
                 MenuItem { text: "Filmstrip"; shortcut: "T"; has-check: true; checked: root.show-filmstrip; enabled: root.filmstrip-items.length > 0; clicked => { root.active-menu = 0; root.toggle-filmstrip(); } }
                 MenuItem { text: "Photo Details & EXIF"; shortcut: "I"; has-check: true; checked: root.show-info; enabled: root.has-image; clicked => { root.active-menu = 0; root.toggle-info(); } }
+                MenuSeparator {}
+                MenuItem {
+                    text: "Fullscreen";
+                    shortcut: "F11";
+                    has-check: true;
+                    checked: root.is-window-fullscreen;
+                    clicked => {
+                        root.active-menu = 0;
+                        root.window-toggle-fullscreen();
+                    }
+                }
             }
         }
 
@@ -1626,50 +1712,50 @@ export component AppWindow inherits Window {
             }
         }
 
-        // FRAMELESS WINDOW RESIZE HANDLES (Active when not maximized)
-        if !root.is-window-maximized: TouchArea {
+        // FRAMELESS WINDOW RESIZE HANDLES (Active when not maximized or in fullscreen)
+        if !root.is-window-maximized && !root.is-window-fullscreen: TouchArea {
             // Top Edge
             x: 5px; y: 0px; width: parent.width - 10px; height: 5px;
             mouse-cursor: ns-resize;
             pointer-event(event) => { if (event.kind == PointerEventKind.down) { root.window-resize(1); } }
         }
-        if !root.is-window-maximized: TouchArea {
+        if !root.is-window-maximized && !root.is-window-fullscreen: TouchArea {
             // Bottom Edge
             x: 5px; y: parent.height - 5px; width: parent.width - 10px; height: 5px;
             mouse-cursor: ns-resize;
             pointer-event(event) => { if (event.kind == PointerEventKind.down) { root.window-resize(2); } }
         }
-        if !root.is-window-maximized: TouchArea {
+        if !root.is-window-maximized && !root.is-window-fullscreen: TouchArea {
             // Right Edge
             x: parent.width - 5px; y: 5px; width: 5px; height: parent.height - 10px;
             mouse-cursor: ew-resize;
             pointer-event(event) => { if (event.kind == PointerEventKind.down) { root.window-resize(3); } }
         }
-        if !root.is-window-maximized: TouchArea {
+        if !root.is-window-maximized && !root.is-window-fullscreen: TouchArea {
             // Left Edge
             x: 0px; y: 5px; width: 5px; height: parent.height - 10px;
             mouse-cursor: ew-resize;
             pointer-event(event) => { if (event.kind == PointerEventKind.down) { root.window-resize(4); } }
         }
-        if !root.is-window-maximized: TouchArea {
+        if !root.is-window-maximized && !root.is-window-fullscreen: TouchArea {
             // Top-Right Corner
             x: parent.width - 5px; y: 0px; width: 5px; height: 5px;
             mouse-cursor: nesw-resize;
             pointer-event(event) => { if (event.kind == PointerEventKind.down) { root.window-resize(5); } }
         }
-        if !root.is-window-maximized: TouchArea {
+        if !root.is-window-maximized && !root.is-window-fullscreen: TouchArea {
             // Top-Left Corner
             x: 0px; y: 0px; width: 5px; height: 5px;
             mouse-cursor: nwse-resize;
             pointer-event(event) => { if (event.kind == PointerEventKind.down) { root.window-resize(6); } }
         }
-        if !root.is-window-maximized: TouchArea {
+        if !root.is-window-maximized && !root.is-window-fullscreen: TouchArea {
             // Bottom-Right Corner
             x: parent.width - 5px; y: parent.height - 5px; width: 5px; height: 5px;
             mouse-cursor: nwse-resize;
             pointer-event(event) => { if (event.kind == PointerEventKind.down) { root.window-resize(7); } }
         }
-        if !root.is-window-maximized: TouchArea {
+        if !root.is-window-maximized && !root.is-window-fullscreen: TouchArea {
             // Bottom-Left Corner
             x: 0px; y: parent.height - 5px; width: 5px; height: 5px;
             mouse-cursor: nesw-resize;

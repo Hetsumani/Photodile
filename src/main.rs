@@ -562,9 +562,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_window_toggle_maximize(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.window().with_winit_window(|winit_win| {
-                    let is_max = !winit_win.is_maximized();
-                    winit_win.set_maximized(is_max);
-                    ui.set_is_window_maximized(is_max);
+                    if winit_win.fullscreen().is_some() {
+                        winit_win.set_fullscreen(None);
+                        ui.set_is_window_fullscreen(false);
+                        ui.set_show_fullscreen_top_bar(false);
+                        ui.set_show_fullscreen_bottom_bar(false);
+                    } else {
+                        let is_max = !winit_win.is_maximized();
+                        winit_win.set_maximized(is_max);
+                        ui.set_is_window_maximized(is_max);
+                    }
+                });
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_window_toggle_fullscreen(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.window().with_winit_window(|winit_win| {
+                    let enter_fullscreen = winit_win.fullscreen().is_none();
+                    if enter_fullscreen {
+                        winit_win.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                        ui.set_is_window_fullscreen(true);
+                        ui.set_show_fullscreen_top_bar(false);
+                        ui.set_show_fullscreen_bottom_bar(false);
+                    } else {
+                        winit_win.set_fullscreen(None);
+                        ui.set_is_window_fullscreen(false);
+                        ui.set_show_fullscreen_top_bar(false);
+                        ui.set_show_fullscreen_bottom_bar(false);
+                    }
                 });
             }
         });
@@ -629,7 +658,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(ui) = ui_weak.upgrade() {
                         window.with_winit_window(|winit_win| {
                             ui.set_is_window_maximized(winit_win.is_maximized());
+                            ui.set_is_window_fullscreen(winit_win.fullscreen().is_some());
                         });
+                    }
+                }
+                winit::event::WindowEvent::CursorMoved { position, .. } => {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        if ui.get_is_window_fullscreen() {
+                            window.with_winit_window(|winit_win| {
+                                let scale = winit_win.scale_factor();
+                                let y = position.y / scale;
+                                let win_h = winit_win.inner_size().height as f64 / scale;
+
+                                let top_visible = ui.get_show_fullscreen_top_bar();
+                                let should_show_top = if top_visible {
+                                    y <= 48.0 || ui.get_active_menu() != 0
+                                } else {
+                                    y <= 12.0
+                                };
+                                if should_show_top != top_visible {
+                                    ui.set_show_fullscreen_top_bar(should_show_top);
+                                }
+
+                                let bot_dist = win_h - y;
+                                let bot_visible = ui.get_show_fullscreen_bottom_bar();
+                                let should_show_bot = if bot_visible {
+                                    bot_dist <= 42.0
+                                } else {
+                                    bot_dist <= 12.0
+                                };
+                                if should_show_bot != bot_visible {
+                                    ui.set_show_fullscreen_bottom_bar(should_show_bot);
+                                }
+                            });
+                        }
+                    }
+                }
+                winit::event::WindowEvent::CursorLeft { .. } => {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        if ui.get_is_window_fullscreen() && ui.get_active_menu() == 0 {
+                            ui.set_show_fullscreen_top_bar(false);
+                            ui.set_show_fullscreen_bottom_bar(false);
+                        }
                     }
                 }
                 winit::event::WindowEvent::HoveredFile(_) => {
