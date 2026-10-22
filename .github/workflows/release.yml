@@ -3,7 +3,10 @@ name: Release Builds
 on:
   push:
     tags:
-      - 'v*' # Se activa cada vez que envías un tag como v0.1.0, v1.0.0, etc.
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   build-and-release:
@@ -24,42 +27,36 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      # Dependencias del sistema necesarias en el runner de Ubuntu para Slint y backends gráficos
       - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libxcb-shape0-dev libxcb-xfixes0-dev
+          sudo apt-get install -y libfontconfig1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      # Empaquetado en Linux (.tar.gz)
       - name: Package Linux artifact
         if: matrix.os == 'ubuntu-latest'
         run: |
           cd target/${{ matrix.target }}/release
           tar -czvf ../../../${{ matrix.asset_name }} ${{ matrix.artifact_name }}
 
-      # Empaquetado en Windows (.zip)
       - name: Package Windows artifact
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -DestinationPath ${{ matrix.asset_name }}
 
-      # Publicación automática del Release en GitHub
       - name: Upload binaries to Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.asset_name }}
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
