@@ -19,12 +19,12 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: photodile
-            asset_name: photodile-linux-x86_64.tar.gz
+            asset_name: Photodile-${{ github.ref_name }}-linux-x86_64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: photodile.exe
-            portable_zip: photodile-windows-x86_64-portable.zip
-            msi_name: photodile-windows-x86_64.msi
+            portable_zip: Photodile-${{ github.ref_name }}-windows-x86_64-portable.zip
+            msi_name: Photodile-${{ github.ref_name }}-windows-x86_64.msi
 
     steps:
       - name: Checkout repository
