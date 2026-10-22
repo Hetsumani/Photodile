@@ -1,0 +1,243 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Photodile WiX Installer Configuration
+  Compatible with WiX Toolset v3 and cargo-wix
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='Photodile'
+        UpgradeCode='C8B715C0-94D9-4EB3-997A-8A46BD841A82'
+        Manufacturer='Hetsumani Interactive'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Photodile - Pure-Rust Photography Visualizer'
+            Manufacturer='Hetsumani Interactive'
+            InstallerVersion='300'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            Platform='x64'/>
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <MediaTemplate EmbedCab='yes'/>
+
+        <Icon Id='ProductICO' SourceFile='assets\photodile.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductICO'/>
+        <Property Id='ARPHELPLINK' Value='https://github.com/Hetsumani/Photodile'/>
+        <Property Id='WIXUI_INSTALLDIR' Value='APPLICATIONFOLDER'/>
+
+        <UIRef Id='WixUI_InstallDir'/>
+        <WixVariable Id='WixUILicenseRtf' Value='wix\license.rtf'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='ProgramFiles64Folder'>
+                <Directory Id='APPLICATIONFOLDER' Name='Photodile'>
+                    <Component Id='MainExecutable' Guid='A14488D5-A7B2-4A73-A7D6-9E9C3C2E1F01' Win64='yes'>
+                        <File
+                            Id='PhotodileEXE'
+                            Name='photodile.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\photodile.exe'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Component Id='ApplicationShortcut' Guid='7E68F0AE-2E24-4B7B-B4D3-A0A6F4E83981' Win64='yes'>
+                    <Shortcut
+                        Id='AppStartMenuShortcut'
+                        Name='Photodile'
+                        Description='Photodile Photography Visualizer'
+                        Target='[APPLICATIONFOLDER]photodile.exe'
+                        WorkingDirectory='APPLICATIONFOLDER'
+                        Icon='ProductICO'/>
+                    <RegistryValue
+                        Root='HKCU'
+                        Key='Software\Photodile'
+                        Name='Installed'
+                        Type='integer'
+                        Value='1'
+                        KeyPath='yes'/>
+                </Component>
+            </Directory>
+        </Directory>
+
+        <DirectoryRef Id='TARGETDIR'>
+            <Component Id='RegistryEntries' Guid='D2A6E941-C132-474F-A9F7-4A1C813D1078' Win64='yes'>
+                <!-- ProgId: Photodile.Image -->
+                <RegistryKey Root='HKLM' Key='Software\Classes\Photodile.Image'>
+                    <RegistryValue Type='string' Value='Photodile' KeyPath='yes'/>
+                    <RegistryValue Name='FriendlyTypeName' Type='string' Value='Photodile'/>
+                    <RegistryKey Key='DefaultIcon'>
+                        <RegistryValue Type='string' Value='&quot;[APPLICATIONFOLDER]photodile.exe&quot;,0'/>
+                    </RegistryKey>
+                    <RegistryKey Key='shell\open'>
+                        <RegistryValue Type='string' Value='Open with Photodile'/>
+                        <RegistryKey Key='command'>
+                            <RegistryValue Type='string' Value='&quot;[APPLICATIONFOLDER]photodile.exe&quot; &quot;%1&quot;'/>
+                        </RegistryKey>
+                    </RegistryKey>
+                </RegistryKey>
+
+                <!-- Default Programs: RegisteredApplications & Capabilities -->
+                <RegistryKey Root='HKLM' Key='Software\RegisteredApplications'>
+                    <RegistryValue Name='Photodile' Type='string' Value='Software\Photodile\Capabilities'/>
+                </RegistryKey>
+
+                <RegistryKey Root='HKLM' Key='Software\Photodile\Capabilities'>
+                    <RegistryValue Name='ApplicationName' Type='string' Value='Photodile'/>
+                    <RegistryValue Name='ApplicationDescription' Type='string' Value='Photodile Photography Visualizer'/>
+                    <RegistryKey Key='FileAssociations'>
+                        <RegistryValue Name='.jpg' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.jpeg' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.png' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.webp' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.avif' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.jxl' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.tiff' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.tif' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.bmp' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.gif' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.ico' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.svg' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.psd' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.exr' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.hdr' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.qoi' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.tga' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.dng' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.cr2' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.cr3' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.nef' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.arw' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.orf' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.rw2' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.pef' Type='string' Value='Photodile.Image'/>
+                        <RegistryValue Name='.raf' Type='string' Value='Photodile.Image'/>
+                    </RegistryKey>
+                </RegistryKey>
+
+                <!-- OpenWithProgids for non-destructive Open With registration -->
+                <RegistryKey Root='HKLM' Key='Software\Classes\.jpg\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.jpeg\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.png\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.webp\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.avif\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.jxl\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.tiff\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.tif\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.bmp\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.gif\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.ico\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.svg\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.psd\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.exr\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.hdr\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.qoi\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.tga\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.dng\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.cr2\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.cr3\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.nef\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.arw\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.orf\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.rw2\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.pef\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+                <RegistryKey Root='HKLM' Key='Software\Classes\.raf\OpenWithProgids'>
+                    <RegistryValue Name='Photodile.Image' Type='string' Value=''/>
+                </RegistryKey>
+
+                <!-- Directory context menu (right-clicking a folder) -->
+                <RegistryKey Root='HKLM' Key='Software\Classes\Directory\shell\Photodile'>
+                    <RegistryValue Type='string' Value='Open with Photodile'/>
+                    <RegistryValue Name='Icon' Type='string' Value='&quot;[APPLICATIONFOLDER]photodile.exe&quot;,0'/>
+                    <RegistryKey Key='command'>
+                        <RegistryValue Type='string' Value='&quot;[APPLICATIONFOLDER]photodile.exe&quot; &quot;%1&quot;'/>
+                    </RegistryKey>
+                </RegistryKey>
+
+                <!-- Directory background context menu (right-clicking empty space inside a folder) -->
+                <RegistryKey Root='HKLM' Key='Software\Classes\Directory\Background\shell\Photodile'>
+                    <RegistryValue Type='string' Value='Open with Photodile'/>
+                    <RegistryValue Name='Icon' Type='string' Value='&quot;[APPLICATIONFOLDER]photodile.exe&quot;,0'/>
+                    <RegistryKey Key='command'>
+                        <RegistryValue Type='string' Value='&quot;[APPLICATIONFOLDER]photodile.exe&quot; &quot;%V&quot;'/>
+                    </RegistryKey>
+                </RegistryKey>
+            </Component>
+        </DirectoryRef>
+
+        <Feature
+            Id='MainFeature'
+            Title='Photodile'
+            Description='Installs Photodile application, Start Menu shortcut, and file associations.'
+            Level='1'>
+            <ComponentRef Id='MainExecutable'/>
+            <ComponentRef Id='ApplicationShortcut'/>
+            <ComponentRef Id='RegistryEntries'/>
+        </Feature>
+
+    </Product>
+
+</Wix>

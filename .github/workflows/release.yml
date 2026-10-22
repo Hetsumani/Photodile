@@ -23,7 +23,8 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: photodile.exe
-            asset_name: photodile-windows-x86_64.zip
+            portable_zip: photodile-windows-x86_64-portable.zip
+            msi_name: photodile-windows-x86_64.msi
 
     steps:
       - name: Checkout repository
@@ -49,14 +50,56 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar -czvf ../../../${{ matrix.asset_name }} ${{ matrix.artifact_name }}
 
-      - name: Package Windows artifact
+      - name: Package Windows portable zip
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -DestinationPath ${{ matrix.asset_name }}
+          Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -DestinationPath ${{ matrix.portable_zip }}
 
-      - name: Upload binaries to Release
+      - name: Build Windows MSI installer
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Locate WiX Toolset v3 on runner
+          $wixDir = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($wixDir -and (Test-Path "$($wixDir.FullName)\bin")) {
+            $binPath = "$($wixDir.FullName)\bin"
+          } elseif ($env:WIX -and (Test-Path "$env:WIX\bin")) {
+            $binPath = "$env:WIX\bin"
+          } else {
+            Write-Error "WiX Toolset v3 not found on runner."
+            exit 1
+          }
+          $env:PATH = "$binPath;$env:PATH"
+
+          # Determine semantic version (strip leading 'v' if present)
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          if (-not $version -or $version -eq $tag) {
+            $cargoToml = Get-Content Cargo.toml -Raw
+            if ($cargoToml -match 'version\s*=\s*"([^"]+)"') {
+              $version = $matches[1]
+            } else {
+              $version = "0.4.0"
+            }
+          }
+
+          New-Item -ItemType Directory -Force -Path target\wix
+          candle.exe -arch x64 -ext WixUIExtension -dVersion="$version" -dCargoTargetBinDir="target\${{ matrix.target }}\release" -out target\wix\main.wixobj wix\main.wxs
+          light.exe -ext WixUIExtension -spdb -out ${{ matrix.msi_name }} target\wix\main.wixobj
+
+      - name: Upload Linux artifact to Release
+        if: matrix.os == 'ubuntu-latest'
         uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.asset_name }}
+          generate_release_notes: true
+
+      - name: Upload Windows artifacts to Release
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ${{ matrix.portable_zip }}
+            ${{ matrix.msi_name }}
           generate_release_notes: true
